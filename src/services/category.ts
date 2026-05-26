@@ -1,7 +1,7 @@
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
-	食費: ["昼ごはん", "ファミマ", "ローソン", "セブン"],
-	日用品: ["Amazon", "マツキヨ", "ウエルシア"],
-	旅行: ["旅行", "ホテル", "新幹線"],
+	食費: ["ご飯", "ごはん"],
+	日用品: ["日用品"],
+	旅行: ["旅行"],
 };
 
 export function decideCategory(text: string): string {
