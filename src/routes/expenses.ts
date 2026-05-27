@@ -1,10 +1,7 @@
 import { Hono } from "hono";
 import type { Bindings } from "../env";
 import { buildCategoryKeywordMap, decideCategory } from "../services/category";
-import {
-	createExpensePage,
-	fetchExpenseCategoryRecords,
-} from "../services/notion";
+import { createExpensePage, fetchExpenseCategoryRecords } from "../services/notion";
 import { expenseSchema } from "../validators/expense";
 
 export const expensesRoute = new Hono<{ Bindings: Bindings }>();
@@ -12,7 +9,6 @@ export const expensesRoute = new Hono<{ Bindings: Bindings }>();
 expensesRoute.post("/", async (c) => {
 	const body = await c.req.json();
 	const parsed = expenseSchema.safeParse(body);
-
 	if (!parsed.success) {
 		return c.json(
 			{
@@ -38,7 +34,6 @@ expensesRoute.post("/", async (c) => {
 		},
 		c.env,
 	);
-
 	return c.json({
 		success: true,
 		pageId: notionPage.id,

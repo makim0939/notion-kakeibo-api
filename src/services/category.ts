@@ -10,9 +10,7 @@ const DEFAULT_CATEGORY = "未分類";
 
 type CategoryKeywordMap = Record<string, string[]>;
 
-export function buildCategoryKeywordMap(
-	historyRecords: CategoryHistoryRecord[] = [],
-): CategoryKeywordMap {
+export function buildCategoryKeywordMap(historyRecords: CategoryHistoryRecord[] = []): CategoryKeywordMap {
 	const map: CategoryKeywordMap = {};
 
 	for (const [category, keywords] of Object.entries(STATIC_CATEGORY_KEYWORDS)) {
@@ -33,17 +31,11 @@ export function buildCategoryKeywordMap(
 	return map;
 }
 
-export function decideCategory(
-	text: string,
-	keywordMap: CategoryKeywordMap,
-): string {
+export function decideCategory(text: string, keywordMap: CategoryKeywordMap): string {
 	return classifyText(text, keywordMap);
 }
 
-export function decideCategoryFromMap(
-	text: string,
-	keywordMap: CategoryKeywordMap,
-): string {
+export function decideCategoryFromMap(text: string, keywordMap: CategoryKeywordMap): string {
 	return classifyText(text, keywordMap);
 }
 

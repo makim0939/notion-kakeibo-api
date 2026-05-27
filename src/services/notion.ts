@@ -4,10 +4,7 @@ import type { CategoryHistoryRecord, ExpenseRequest } from "../types/expense";
 type NotionCreatePageResponse = {
 	id: string;
 };
-export async function createExpensePage(
-	expense: ExpenseRequest,
-	env: Bindings,
-): Promise<NotionCreatePageResponse> {
+export async function createExpensePage(expense: ExpenseRequest, env: Bindings): Promise<NotionCreatePageResponse> {
 	const response = await fetch("https://api.notion.com/v1/pages", {
 		method: "POST",
 		headers: {
@@ -39,9 +36,7 @@ export async function createExpensePage(
 	return response.json() as Promise<NotionCreatePageResponse>;
 }
 
-export async function fetchExpenseCategoryRecords(
-	env: Bindings,
-): Promise<CategoryHistoryRecord[]> {
+export async function fetchExpenseCategoryRecords(env: Bindings): Promise<CategoryHistoryRecord[]> {
 	if (!env.NOTION_API_KEY || !env.NOTION_DATABASE_ID) {
 		return [];
 	}
@@ -69,8 +64,7 @@ export async function fetchExpenseCategoryRecords(
 		}
 
 		const data = await response.json();
-		const results =
-			isObject(data) && Array.isArray(data.results) ? data.results : [];
+		const results = isObject(data) && Array.isArray(data.results) ? data.results : [];
 
 		for (const page of results) {
 			const name = extractPageTitle(page);
@@ -87,8 +81,7 @@ export async function fetchExpenseCategoryRecords(
 			break;
 		}
 
-		startCursor =
-			typeof data.next_cursor === "string" ? data.next_cursor : undefined;
+		startCursor = typeof data.next_cursor === "string" ? data.next_cursor : undefined;
 	}
 
 	return records;
