@@ -1,25 +1,25 @@
 {
-    "name": "notion-kakeibo-api",
-    "type": "module",
-    "scripts": {
-        "dev": "wrangler dev",
-        "deploy": "wrangler deploy --minify",
-        "cf-typegen": "wrangler types --env-interface CloudflareBindings",
-        "prepare": "husky"
-    },
-    "dependencies": {
-        "hono": "^4.12.23",
-        "zod": "^4.4.3"
-    },
-    "devDependencies": {
-        "@biomejs/biome": "2.4.15",
-        "husky": "^9.1.7",
-        "lint-staged": "^16.4.0",
-        "wrangler": "^4.4.0"
-    },
-    "lint-staged": {
-        "*.{js,jsx,ts,tsx}": [
-            "@biomejs/biome check --write"
-        ]
-    }
+	"name": "notion-kakeibo-api",
+	"type": "module",
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy --minify",
+		"cf-typegen": "wrangler types --env-interface CloudflareBindings",
+		"prepare": "husky"
+	},
+	"dependencies": {
+		"hono": "^4.12.23",
+		"zod": "^4.4.3"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.4.15",
+		"husky": "^9.1.7",
+		"lint-staged": "^16.4.0",
+		"wrangler": "^4.4.0"
+	},
+	"lint-staged": {
+		"*.{js,jsx,ts,tsx}": [
+			"@biomejs/biome check --write"
+		]
+	}
 }

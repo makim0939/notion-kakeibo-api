@@ -1,6 +1,6 @@
 import { Hono } from "hono";
-import { expensesRoute } from "./routes/expenses";
 import type { Bindings } from "./env";
+import { expensesRoute } from "./routes/expenses";
 
 const app = new Hono<{ Bindings: Bindings }>();
 
