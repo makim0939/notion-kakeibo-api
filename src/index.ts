@@ -10,4 +10,13 @@ app.get("/", (c) => {
 
 app.route("/expenses", expensesRoute);
 
+app.onError((err, c) => {
+	return c.json(
+		{
+			success: false,
+			message: err.message,
+		},
+		500,
+	);
+});
 export default app;
