@@ -39,50 +39,6 @@ export async function createExpensePage(
 	return response.json() as Promise<NotionCreatePageResponse>;
 }
 
-export async function fetchExpensePageProperties<T, K extends keyof T>(
-	env: Bindings,
-	keys: K[],
-): Promise<Pick<T, K>[]> {
-	const url = `https://api.notion.com/v1/databases/${env.NOTION_DATABASE_ID}/query`;
-	const properties: Pick<T, K>[] = [];
-
-	let startCursor: string | undefined;
-
-	while (true) {
-		const response = await fetch(url, {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${env.NOTION_API_KEY}`,
-				"Content-Type": "application/json",
-				"Notion-Version": "2022-06-28",
-			},
-			body: JSON.stringify({
-				page_size: 100,
-				start_cursor: startCursor,
-			}),
-		});
-
-		if (!response.ok) {
-			return [];
-		}
-
-		const data = await response.json();
-		const results = Array.isArray(data.results) ? data.results : [];
-
-		for (const page of results) {
-			const props = page.properties;
-			properties.push(
-				Object.fromEntries(keys.map((key) => [key, props[key]])) as Pick<T, K>,
-			);
-		}
-
-		if (data.has_more !== true) {
-			break;
-		}
-	}
-	return properties;
-}
-
 export async function fetchExpenseCategoryRecords(
 	env: Bindings,
 ): Promise<CategoryHistoryRecord[]> {
