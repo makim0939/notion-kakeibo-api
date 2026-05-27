@@ -1,15 +1,9 @@
 import type { Bindings } from "../env";
-import type { ExpenseRequest } from "../types/expense";
+import type { CategoryHistoryRecord, ExpenseRequest } from "../types/expense";
 
 type NotionCreatePageResponse = {
 	id: string;
 };
-
-export type NotionExpenseRecord = {
-	name: string;
-	category: string;
-};
-
 export async function createExpensePage(
 	expense: ExpenseRequest,
 	env: Bindings,
@@ -47,13 +41,13 @@ export async function createExpensePage(
 
 export async function fetchExpenseCategoryRecords(
 	env: Bindings,
-): Promise<NotionExpenseRecord[]> {
+): Promise<CategoryHistoryRecord[]> {
 	if (!env.NOTION_API_KEY || !env.NOTION_DATABASE_ID) {
 		return [];
 	}
 
 	const url = `https://api.notion.com/v1/databases/${env.NOTION_DATABASE_ID}/query`;
-	const records: NotionExpenseRecord[] = [];
+	const records: CategoryHistoryRecord[] = [];
 	let startCursor: string | undefined;
 
 	while (true) {

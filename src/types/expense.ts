@@ -9,3 +9,8 @@ export type ExpenseRequest = {
 	date: string;
 	category?: string;
 };
+
+export type CategoryHistoryRecord = {
+	name: string;
+	category: string;
+};

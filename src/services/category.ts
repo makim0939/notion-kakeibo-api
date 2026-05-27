@@ -1,3 +1,5 @@
+import type { CategoryHistoryRecord } from "../types/expense";
+
 const STATIC_CATEGORY_KEYWORDS: Record<string, string[]> = {
 	食費: ["ご飯", "ごはん"],
 	日用品: ["日用品"],
@@ -7,11 +9,6 @@ const STATIC_CATEGORY_KEYWORDS: Record<string, string[]> = {
 const DEFAULT_CATEGORY = "未分類";
 
 type CategoryKeywordMap = Record<string, string[]>;
-
-export type CategoryHistoryRecord = {
-	name: string;
-	category: string;
-};
 
 export function buildCategoryKeywordMap(
 	historyRecords: CategoryHistoryRecord[] = [],
