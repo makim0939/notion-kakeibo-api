@@ -1,11 +1,11 @@
 const STATIC_CATEGORY_KEYWORDS: Record<string, string[]> = {
 	"日用・食費": ["ご飯", "ごはん", "食材", "日用"],
-	"住居費": ["家賃", "電気", "ガス", "水道", "通信"],
-	"生活費": ["服", "美容院"],
-	"遊び": ["映画", "スタバ", "外食"],
-	"仕事勉強費": ["通勤", "Udemy", "講座"],
-	"旅行": ["旅行"],
-	"特別費":["病院"]
+	住居費: ["家賃", "電気", "ガス", "水道", "通信"],
+	生活費: ["服", "美容院"],
+	遊び: ["映画", "スタバ", "外食"],
+	仕事勉強費: ["通勤", "Udemy", "講座"],
+	旅行: ["旅行"],
+	特別費: ["病院"],
 };
 
 const DEFAULT_CATEGORY = "未分類";
@@ -41,13 +41,6 @@ export function buildCategoryKeywordMap(
 }
 
 export function decideCategory(
-	text: string,
-	keywordMap: CategoryKeywordMap,
-): string {
-	return classifyText(text, keywordMap);
-}
-
-export function decideCategoryFromMap(
 	text: string,
 	keywordMap: CategoryKeywordMap,
 ): string {
