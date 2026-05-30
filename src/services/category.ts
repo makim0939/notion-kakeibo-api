@@ -22,10 +22,10 @@ export function buildCategoryKeywordMap(historyRecords: CategoryHistoryRecord[] 
 	}
 
 	for (const record of historyRecords) {
-		if (!map[record.category]) {
-			map[record.category] = [];
+		if (!map[record.カテゴリ]) {
+			map[record.カテゴリ] = [];
 		}
-		map[record.category].push(record.name);
+		map[record.カテゴリ].push(record.名前);
 	}
 
 	for (const category of Object.keys(map)) {
