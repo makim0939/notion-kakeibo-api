@@ -1,47 +1,48 @@
+import { Client } from "@notionhq/client";
 import type { Bindings } from "../env";
 import type { CategoryHistoryRecord, ExpenseRequest } from "../types/expense";
 
 type NotionCreatePageResponse = {
 	id: string;
 };
-export async function createExpensePage(expense: ExpenseRequest, env: Bindings): Promise<NotionCreatePageResponse> {
-	const response = await fetch("https://api.notion.com/v1/pages", {
-		method: "POST",
-		headers: {
-			Authorization: `Bearer ${env.NOTION_API_KEY}`,
-			"Content-Type": "application/json",
-			"Notion-Version": "2022-06-28",
-		},
-		body: JSON.stringify({
-			parent: {
-				database_id: env.NOTION_DATABASE_ID,
-			},
-			properties: {
-				名前: {
-					title: [{ text: { content: expense.name } }],
-				},
-				金額: { number: expense.amount },
-				支払い方法: { select: { name: expense.paymentMethod } },
-				購入日: { date: { start: expense.date } },
-				カテゴリ: { select: { name: expense.category ?? "未分類" } },
-			},
-		}),
-	});
 
-	if (!response.ok) {
-		const text = await response.text();
-		throw new Error(text);
-	}
+export function createNotionService(env: Bindings) {
+	const notion = new Client({ auth: env.NOTION_API_KEY });
+	const databaseId = env.NOTION_DATABASE_ID;
 
-	return response.json() as Promise<NotionCreatePageResponse>;
+	return {
+		createExpensePage: (expense: ExpenseRequest) => createExpensePage(notion, databaseId, expense),
+		fetchExpenseCategoryRecords: () => fetchExpenseCategoryRecords(notion, databaseId),
+	};
 }
 
-export async function fetchExpenseCategoryRecords(env: Bindings): Promise<CategoryHistoryRecord[]> {
-	if (!env.NOTION_API_KEY || !env.NOTION_DATABASE_ID) {
-		return [];
-	}
+export async function createExpensePage(
+	notion: Client,
+	databaseId: string,
+	expense: ExpenseRequest,
+): Promise<NotionCreatePageResponse> {
+	const response = await notion.pages.create({
+		parent: {
+			database_id: databaseId,
+		},
+		properties: {
+			名前: {
+				title: [{ text: { content: expense.name } }],
+			},
+			金額: { number: expense.amount },
+			支払い方法: { select: { name: expense.paymentMethod } },
+			購入日: { date: { start: expense.date } },
+			カテゴリ: { select: { name: expense.category ?? "未分類" } },
+		},
+	});
 
-	const url = `https://api.notion.com/v1/databases/${env.NOTION_DATABASE_ID}/query`;
+	return { id: response.id };
+}
+
+export async function fetchExpenseCategoryRecords(
+	notion: Client,
+	databaseId: string,
+): Promise<CategoryHistoryRecord[]> {
 	const records: CategoryHistoryRecord[] = [];
 	let startCursor: string | undefined;
 
