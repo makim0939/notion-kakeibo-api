@@ -4,7 +4,7 @@ import { PAYMENT_METHODS } from "../types/expense";
 export const expenseSchema = z.object({
 	name: z.string().trim().min(1, "name is required"),
 
-	amount: z.number().positive("amount must be greater than 0"),
+	amount: z.number().refine((num) => num !== 0, "amount must be not zero"),
 
 	paymentMethod: z.enum(PAYMENT_METHODS),
 
