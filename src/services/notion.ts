@@ -4,24 +4,28 @@ import type { Bindings } from "../env";
 import type { CategoryHistoryRecord, ExpenseRequest } from "../types/expense";
 
 type PageProperty = PageObjectResponse["properties"][string];
-type TitleProperty = Extract<PageProperty, { type: "title" }>;
-type SelectProperty = Extract<PageProperty, { type: "select" }>;
 
 type CategoryHistoryProperties = {
-	名前: TitleProperty;
-	カテゴリ: SelectProperty;
+	名前: Extract<PageProperty, { type: "title" }>;
+	カテゴリ: Extract<PageProperty, { type: "select" }>;
 };
 
 type QueryDataSourceResult = QueryDataSourceResponse["results"][number];
+
+type NotionServiceConfig = {
+	apiKey: string;
+	databaseId: string;
+	dataSourceId: string;
+};
 
 type NotionCreatePageResponse = {
 	id: string;
 };
 
-export function createNotionService(env: Bindings) {
-	const notion = new Client({ auth: env.NOTION_API_KEY });
-	const databaseId = env.NOTION_DATABASE_ID;
-	const dataSourceId = env.NOTION_DATASOURCE_ID;
+export function createNotionService(config: NotionServiceConfig) {
+	const notion = new Client({ auth: config.apiKey });
+	const databaseId = config.databaseId;
+	const dataSourceId = config.dataSourceId;
 
 	return {
 		createExpensePage: (expense: ExpenseRequest) => createExpensePage(notion, databaseId, expense),

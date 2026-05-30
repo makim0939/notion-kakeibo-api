@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Bindings } from "../env";
 import { buildCategoryKeywordMap, decideCategory } from "../services/category";
-import { createExpensePage, createNotionService, fetchExpenseCategoryRecords } from "../services/notion";
+import { createNotionService } from "../services/notion";
 import { expenseSchema } from "../validators/expense";
 
 export const expensesRoute = new Hono<{ Bindings: Bindings }>();
@@ -21,9 +21,14 @@ expensesRoute.post("/", async (c) => {
 
 	const expense = parsed.data;
 
+	const notionService = createNotionService({
+		apiKey: c.env.NOTION_API_KEY,
+		databaseId: c.env.NOTION_DATABASE_ID,
+		dataSourceId: c.env.NOTION_DATASOURCE_ID,
+	});
+
 	// カテゴリは自動決定に対応するため、リクエストに含まれないことを許容している。
 	// リクエストにカテゴリが含まれない場合はここで決定する。
-	const notionService = createNotionService(c.env);
 	const historyRecords = await notionService.fetchExpenseCategoryRecords();
 	const keywordMap = buildCategoryKeywordMap(historyRecords);
 	const category = expense.category ?? decideCategory(expense.name, keywordMap);
