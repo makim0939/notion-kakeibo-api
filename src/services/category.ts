@@ -1,9 +1,13 @@
 import type { CategoryHistoryRecord } from "../types/expense";
 
 const STATIC_CATEGORY_KEYWORDS: Record<string, string[]> = {
-	食費: ["ご飯", "ごはん"],
-	日用品: ["日用品"],
-	旅行: ["旅行"],
+	"日用・食費": ["ご飯", "ごはん", "食材", "日用", "掃除"],
+	住居費: ["家賃", "電気", "ガス", "水道", "通信"],
+	生活費: ["服", "美容院"],
+	遊び費: ["映画", "スタバ", "外食"],
+	仕事勉強費: ["通勤", "Udemy", "講座"],
+	旅行費: ["旅行"],
+	特別費: ["病院"],
 };
 
 const DEFAULT_CATEGORY = "未分類";
@@ -32,10 +36,6 @@ export function buildCategoryKeywordMap(historyRecords: CategoryHistoryRecord[] 
 }
 
 export function decideCategory(text: string, keywordMap: CategoryKeywordMap): string {
-	return classifyText(text, keywordMap);
-}
-
-export function decideCategoryFromMap(text: string, keywordMap: CategoryKeywordMap): string {
 	return classifyText(text, keywordMap);
 }
 
