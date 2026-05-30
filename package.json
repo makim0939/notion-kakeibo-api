@@ -5,7 +5,9 @@
         "dev": "wrangler dev",
         "deploy": "wrangler deploy --minify",
         "cf-typegen": "wrangler types --env-interface CloudflareBindings",
-        "prepare": "husky"
+        "prepare": "husky",
+        "typecheck": "tsc --noEmit",
+        "check": "biome check src/"
     },
     "dependencies": {
         "hono": "^4.12.23",
@@ -15,6 +17,7 @@
         "@biomejs/biome": "2.4.15",
         "husky": "^9.1.7",
         "lint-staged": "^16.4.0",
+        "typescript": "^6.0.3",
         "wrangler": "^4.4.0"
     },
     "lint-staged": {

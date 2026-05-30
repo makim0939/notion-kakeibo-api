@@ -26,8 +26,11 @@ jobs:
       - name: npmパッケージをインストール
         run: npm ci
 
-      - name: ビルド
-        run: npm run build
+      - name: 型チェック
+        run: npm run typecheck
+
+      - name: フォーマットチェック
+        run: npm run check
 
       - name: デプロイ
         run: npx wrangler deploy
