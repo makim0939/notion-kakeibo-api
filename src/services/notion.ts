@@ -1,6 +1,5 @@
 import type { PageObjectResponse, QueryDataSourceResponse } from "@notionhq/client";
 import { Client } from "@notionhq/client";
-import type { Bindings } from "../env";
 import type { CategoryHistoryRecord, ExpenseRequest } from "../types/expense";
 
 type PageProperty = PageObjectResponse["properties"][string];
