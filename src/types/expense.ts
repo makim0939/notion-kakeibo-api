@@ -11,6 +11,6 @@ export type ExpenseRequest = {
 };
 
 export type CategoryHistoryRecord = {
-	name: string;
-	category: string;
+	名前: string;
+	カテゴリ: string;
 };

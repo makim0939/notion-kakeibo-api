@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Bindings } from "../env";
 import { buildCategoryKeywordMap, decideCategory } from "../services/category";
-import { createExpensePage, fetchExpenseCategoryRecords } from "../services/notion";
+import { createExpensePage, createNotionService, fetchExpenseCategoryRecords } from "../services/notion";
 import { expenseSchema } from "../validators/expense";
 
 export const expensesRoute = new Hono<{ Bindings: Bindings }>();
@@ -23,17 +23,13 @@ expensesRoute.post("/", async (c) => {
 
 	// カテゴリは自動決定に対応するため、リクエストに含まれないことを許容している。
 	// リクエストにカテゴリが含まれない場合はここで決定する。
-	const historyRecords = await fetchExpenseCategoryRecords(c.env);
+	const notionService = createNotionService(c.env);
+	const historyRecords = await notionService.fetchExpenseCategoryRecords();
 	const keywordMap = buildCategoryKeywordMap(historyRecords);
 	const category = expense.category ?? decideCategory(expense.name, keywordMap);
 
-	const notionPage = await createExpensePage(
-		{
-			...expense,
-			category,
-		},
-		c.env,
-	);
+	const notionPage = await notionService.createExpensePage({ ...expense, category });
+
 	return c.json({
 		success: true,
 		pageId: notionPage.id,

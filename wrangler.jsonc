@@ -7,7 +7,8 @@
 	//   "nodejs_compat"
 	// ],
 	"vars": {
-		"NOTION_DATABASE_ID": "36aa4e54a1b58021a776e6a542910700"
+		"NOTION_DATABASE_ID": "36aa4e54a1b58021a776e6a542910700",
+		"NOTION_DATASOURCE_ID": "36aa4e54-a1b5-8072-bbd7-000b21cf4943"
 	}
 	// "kv_namespaces": [
 	//   {

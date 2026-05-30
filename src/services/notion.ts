@@ -1,6 +1,18 @@
+import type { PageObjectResponse, QueryDataSourceResponse } from "@notionhq/client";
 import { Client } from "@notionhq/client";
 import type { Bindings } from "../env";
 import type { CategoryHistoryRecord, ExpenseRequest } from "../types/expense";
+
+type PageProperty = PageObjectResponse["properties"][string];
+type TitleProperty = Extract<PageProperty, { type: "title" }>;
+type SelectProperty = Extract<PageProperty, { type: "select" }>;
+
+type CategoryHistoryProperties = {
+	名前: TitleProperty;
+	カテゴリ: SelectProperty;
+};
+
+type QueryDataSourceResult = QueryDataSourceResponse["results"][number];
 
 type NotionCreatePageResponse = {
 	id: string;
@@ -9,10 +21,11 @@ type NotionCreatePageResponse = {
 export function createNotionService(env: Bindings) {
 	const notion = new Client({ auth: env.NOTION_API_KEY });
 	const databaseId = env.NOTION_DATABASE_ID;
+	const dataSourceId = env.NOTION_DATASOURCE_ID;
 
 	return {
 		createExpensePage: (expense: ExpenseRequest) => createExpensePage(notion, databaseId, expense),
-		fetchExpenseCategoryRecords: () => fetchExpenseCategoryRecords(notion, databaseId),
+		fetchExpenseCategoryRecords: () => fetchExpenseCategoryRecords(notion, dataSourceId),
 	};
 }
 
@@ -41,111 +54,49 @@ export async function createExpensePage(
 
 export async function fetchExpenseCategoryRecords(
 	notion: Client,
-	databaseId: string,
+	dataSourceId: string,
 ): Promise<CategoryHistoryRecord[]> {
 	const records: CategoryHistoryRecord[] = [];
+	let hasMore = true;
 	let startCursor: string | undefined;
 
-	while (true) {
-		const response = await fetch(url, {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${env.NOTION_API_KEY}`,
-				"Content-Type": "application/json",
-				"Notion-Version": "2022-06-28",
+	while (hasMore) {
+		const response = await notion.dataSources.query({
+			data_source_id: dataSourceId,
+			start_cursor: startCursor,
+			filter_properties: ["名前", "カテゴリ"],
+			filter: {
+				property: "カテゴリ",
+				select: { does_not_equal: "未分類" },
 			},
-			body: JSON.stringify({
-				page_size: 100,
-				start_cursor: startCursor,
-			}),
 		});
 
-		if (!response.ok) {
-			return [];
-		}
+		const categories = response.results.flatMap((page) => {
+			if (isFullPage(page) && hasCategoryHistoryProperties(page.properties)) {
+				if (!page.properties.名前.title.length || !page.properties.カテゴリ.select) return [];
 
-		const data = await response.json();
-		const results = isObject(data) && Array.isArray(data.results) ? data.results : [];
-
-		for (const page of results) {
-			const name = extractPageTitle(page);
-			const category = extractPageCategory(page);
-
-			if (!name || !category) {
-				continue;
+				return {
+					名前: page.properties.名前.title[0]?.plain_text,
+					カテゴリ: page.properties.カテゴリ.select.name,
+				};
 			}
+			return [];
+		});
 
-			records.push({ name, category });
-		}
+		records.push(...categories);
 
-		if (!isObject(data) || data.has_more !== true) {
-			break;
-		}
-
-		startCursor = typeof data.next_cursor === "string" ? data.next_cursor : undefined;
+		hasMore = response.has_more;
+		startCursor = response.next_cursor ?? undefined;
 	}
-
 	return records;
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
+function isFullPage(page: QueryDataSourceResult): page is PageObjectResponse {
+	return "properties" in page;
 }
 
-function extractPageTitle(page: unknown): string | undefined {
-	if (!isObject(page)) {
-		return undefined;
-	}
-
-	const properties = page.properties;
-	if (!isObject(properties)) {
-		return undefined;
-	}
-
-	const nameProperty = properties.名前;
-	if (!isObject(nameProperty) || !Array.isArray(nameProperty.title)) {
-		return undefined;
-	}
-
-	const titleArray = nameProperty.title;
-	return (
-		titleArray
-			.map((part) => {
-				if (!isObject(part)) {
-					return "";
-				}
-				if (typeof part.plain_text === "string") {
-					return part.plain_text;
-				}
-				if (isObject(part.text) && typeof part.text.content === "string") {
-					return part.text.content;
-				}
-				return "";
-			})
-			.join("")
-			.trim() || undefined
-	);
-}
-
-function extractPageCategory(page: unknown): string | undefined {
-	if (!isObject(page)) {
-		return undefined;
-	}
-
-	const properties = page.properties;
-	if (!isObject(properties)) {
-		return undefined;
-	}
-
-	const categoryProperty = properties.カテゴリ;
-	if (!isObject(categoryProperty)) {
-		return undefined;
-	}
-
-	const selectProperty = categoryProperty.select;
-	if (!isObject(selectProperty) || typeof selectProperty.name !== "string") {
-		return undefined;
-	}
-
-	return selectProperty.name;
+function hasCategoryHistoryProperties(
+	properties: PageObjectResponse["properties"],
+): properties is CategoryHistoryProperties {
+	return properties["名前"]?.type === "title" && properties["カテゴリ"]?.type === "select";
 }
