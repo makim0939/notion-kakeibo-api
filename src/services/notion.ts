@@ -4,11 +4,6 @@ import type { CategoryHistoryRecord, ExpenseRequest } from "../types/expense";
 
 type PageProperty = PageObjectResponse["properties"][string];
 
-type CategoryHistoryProperties = {
-	名前: Extract<PageProperty, { type: "title" }>;
-	カテゴリ: Extract<PageProperty, { type: "select" }>;
-};
-
 type QueryDataSourceResult = QueryDataSourceResponse["results"][number];
 
 type NotionServiceConfig = {
