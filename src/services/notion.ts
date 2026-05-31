@@ -15,20 +15,37 @@ type NotionServiceConfig = {
 	apiKey: string;
 	databaseId: string;
 	dataSourceId: string;
+	summaryDataSourceId: string;
 };
 
 type NotionCreatePageResponse = {
 	id: string;
 };
 
+type PropertyShapeMap = {
+	title: "title";
+	select: "select";
+	rich_text: "rich_text";
+	number: "number";
+	checkbox: "checkbox";
+	date: "date";
+};
+
+type PropertyOf<T extends Record<string, keyof PropertyShapeMap>> = {
+	[K in keyof T]: Extract<PageProperty, { type: PropertyShapeMap[T[K]] }>;
+};
+
 export function createNotionService(config: NotionServiceConfig) {
 	const notion = new Client({ auth: config.apiKey });
 	const databaseId = config.databaseId;
 	const dataSourceId = config.dataSourceId;
+	const summaryDataSourceId = config.summaryDataSourceId;
 
 	return {
-		createExpensePage: (expense: ExpenseRequest) => createExpensePage(notion, databaseId, expense),
+		createExpensePage: (expense: ExpenseRequest, summaryPageId: string | null) =>
+			createExpensePage(notion, databaseId, expense, summaryPageId),
 		fetchExpenseCategoryRecords: () => fetchExpenseCategoryRecords(notion, dataSourceId),
+		fetchSummaryIdByDate: (date: Date) => fetchSummaryIdByDate(notion, summaryDataSourceId, date),
 	};
 }
 
@@ -36,6 +53,7 @@ export async function createExpensePage(
 	notion: Client,
 	databaseId: string,
 	expense: ExpenseRequest,
+	summaryPageId: string | null,
 ): Promise<NotionCreatePageResponse> {
 	const response = await notion.pages.create({
 		parent: {
@@ -49,6 +67,7 @@ export async function createExpensePage(
 			支払い方法: { select: { name: expense.paymentMethod } },
 			購入日: { date: { start: expense.date } },
 			カテゴリ: { select: { name: expense.category ?? "未分類" } },
+			月次サマリ: { relation: [{ id: summaryPageId ?? "" }] },
 		},
 	});
 
@@ -59,47 +78,91 @@ export async function fetchExpenseCategoryRecords(
 	notion: Client,
 	dataSourceId: string,
 ): Promise<CategoryHistoryRecord[]> {
-	const records: CategoryHistoryRecord[] = [];
+	const shape = {
+		名前: "title",
+		カテゴリ: "select",
+	} as const;
+
+	const pages = await fetchAllDataSourcePages(notion, {
+		data_source_id: dataSourceId,
+		filter_properties: Object.keys(shape),
+		filter: {
+			property: "カテゴリ",
+			select: { does_not_equal: "未分類" },
+		},
+	});
+
+	return pages.flatMap((page) => {
+		if (!hasProperties(page.properties, shape)) return [];
+
+		if (!page.properties.名前.title.length || !page.properties.カテゴリ.select) return [];
+
+		return [
+			{
+				名前: page.properties.名前.title[0]?.plain_text,
+				カテゴリ: page.properties.カテゴリ.select.name,
+			},
+		];
+	});
+}
+
+export async function fetchSummaryIdByDate(notion: Client, dataSourceId: string, date: Date): Promise<string | null> {
+	const shape = {
+		日付: "date",
+	} as const;
+
+	const year = date.getFullYear();
+	const month = date.getMonth() + 1;
+	const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
+	const endDate = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, "0")}-01`;
+	const pages = await fetchAllDataSourcePages(notion, {
+		data_source_id: dataSourceId,
+		filter_properties: Object.keys(shape),
+		filter: {
+			property: "日付",
+			date: {
+				on_or_after: startDate,
+				before: endDate,
+			},
+		},
+		page_size: 1,
+	});
+
+	return pages[0].id ?? null;
+}
+
+async function fetchAllDataSourcePages(
+	notion: Client,
+	params: Omit<Parameters<Client["dataSources"]["query"]>[0], "start_cursor">,
+): Promise<PageObjectResponse[]> {
+	const pages: PageObjectResponse[] = [];
 	let hasMore = true;
 	let startCursor: string | undefined;
 
 	while (hasMore) {
 		const response = await notion.dataSources.query({
-			data_source_id: dataSourceId,
+			...params,
 			start_cursor: startCursor,
-			filter_properties: ["名前", "カテゴリ"],
-			filter: {
-				property: "カテゴリ",
-				select: { does_not_equal: "未分類" },
-			},
 		});
 
-		const categories = response.results.flatMap((page) => {
-			if (isFullPage(page) && hasCategoryHistoryProperties(page.properties)) {
-				if (!page.properties.名前.title.length || !page.properties.カテゴリ.select) return [];
-
-				return {
-					名前: page.properties.名前.title[0]?.plain_text,
-					カテゴリ: page.properties.カテゴリ.select.name,
-				};
-			}
-			return [];
-		});
-
-		records.push(...categories);
+		pages.push(...response.results.filter(isFullPage));
 
 		hasMore = response.has_more;
 		startCursor = response.next_cursor ?? undefined;
 	}
-	return records;
+
+	return pages;
 }
 
 function isFullPage(page: QueryDataSourceResult): page is PageObjectResponse {
 	return "properties" in page;
 }
 
-function hasCategoryHistoryProperties(
+function hasProperties<T extends Record<string, keyof PropertyShapeMap>>(
 	properties: PageObjectResponse["properties"],
-): properties is CategoryHistoryProperties {
-	return properties["名前"]?.type === "title" && properties["カテゴリ"]?.type === "select";
+	shape: T,
+): properties is PropertyOf<T> {
+	return Object.entries(shape).every(([key, type]) => {
+		return properties[key]?.type === type;
+	});
 }
