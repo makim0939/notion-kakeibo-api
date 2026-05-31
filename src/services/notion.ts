@@ -83,7 +83,7 @@ export async function fetchExpenseCategoryRecords(
 		カテゴリ: "select",
 	} as const;
 
-	const pages = await fetchAllDataSourcePages(notion, {
+	const pages = await fetchDataSourcePages(notion, {
 		data_source_id: dataSourceId,
 		filter_properties: Object.keys(shape),
 		filter: {
@@ -115,7 +115,7 @@ export async function fetchSummaryIdByDate(notion: Client, dataSourceId: string,
 	const month = date.getMonth() + 1;
 	const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
 	const endDate = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, "0")}-01`;
-	const pages = await fetchAllDataSourcePages(notion, {
+	const pages = await fetchDataSourcePages(notion, {
 		data_source_id: dataSourceId,
 		filter_properties: Object.keys(shape),
 		filter: {
@@ -131,7 +131,7 @@ export async function fetchSummaryIdByDate(notion: Client, dataSourceId: string,
 	return pages[0].id ?? null;
 }
 
-async function fetchAllDataSourcePages(
+async function fetchDataSourcePages(
 	notion: Client,
 	params: Omit<Parameters<Client["dataSources"]["query"]>[0], "start_cursor">,
 ): Promise<PageObjectResponse[]> {
