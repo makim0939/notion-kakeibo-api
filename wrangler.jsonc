@@ -8,7 +8,8 @@
 	// ],
 	"vars": {
 		"NOTION_DATABASE_ID": "36aa4e54a1b58021a776e6a542910700",
-		"NOTION_DATASOURCE_ID": "36aa4e54-a1b5-8072-bbd7-000b21cf4943"
+		"NOTION_DATASOURCE_ID": "36aa4e54-a1b5-8072-bbd7-000b21cf4943",
+		"NOTION_SUMMARY_DATA_SOURCE_ID": "36aa4e54-a1b5-8045-b743-000b3089b2ca"
 	}
 	// "kv_namespaces": [
 	//   {

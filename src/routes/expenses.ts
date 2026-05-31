@@ -25,6 +25,7 @@ expensesRoute.post("/", async (c) => {
 		apiKey: c.env.NOTION_API_KEY,
 		databaseId: c.env.NOTION_DATABASE_ID,
 		dataSourceId: c.env.NOTION_DATASOURCE_ID,
+		summaryDataSourceId: c.env.NOTION_SUMMARY_DATA_SOURCE_ID,
 	});
 
 	// カテゴリは自動決定に対応するため、リクエストに含まれないことを許容している。
@@ -33,7 +34,8 @@ expensesRoute.post("/", async (c) => {
 	const keywordMap = buildCategoryKeywordMap(historyRecords);
 	const category = expense.category ?? decideCategory(expense.name, keywordMap);
 
-	const notionPage = await notionService.createExpensePage({ ...expense, category });
+	const summaryPageId = await notionService.fetchSummaryIdByDate(new Date(expense.date));
+	const notionPage = await notionService.createExpensePage({ ...expense, category }, summaryPageId);
 
 	return c.json({
 		success: true,
