@@ -67,7 +67,7 @@ export async function createExpensePage(
 			支払い方法: { select: { name: expense.paymentMethod } },
 			購入日: { date: { start: expense.date } },
 			カテゴリ: { select: { name: expense.category ?? "未分類" } },
-			月次サマリ: { relation: [{ id: summaryPageId ?? "" }] },
+			...(summaryPageId ? { 月次サマリ: { relation: [{ id: summaryPageId }] } } : {}),
 		},
 	});
 
@@ -119,16 +119,25 @@ export async function fetchSummaryIdByDate(notion: Client, dataSourceId: string,
 		data_source_id: dataSourceId,
 		filter_properties: Object.keys(shape),
 		filter: {
-			property: "日付",
-			date: {
-				on_or_after: startDate,
-				before: endDate,
-			},
+			and: [
+				{
+					property: "日付",
+					date: {
+						on_or_after: startDate,
+					},
+				},
+				{
+					property: "日付",
+					date: {
+						before: endDate,
+					},
+				},
+			],
 		},
 		page_size: 1,
 	});
 
-	return pages[0].id ?? null;
+	return pages[0]?.id ?? null;
 }
 
 async function fetchDataSourcePages(
