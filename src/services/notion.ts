@@ -135,6 +135,8 @@ export async function fetchSummaryIdByDate(notion: Client, dataSourceId: string,
 	return pages[0]?.id ?? null;
 }
 
+export async function fetchSummaryProperties(notion: Client, pageId: string) {}
+
 async function fetchDataSourcePages(
 	notion: Client,
 	params: Omit<Parameters<Client["dataSources"]["query"]>[0], "start_cursor">,
