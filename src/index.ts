@@ -1,10 +1,14 @@
 import { APIResponseError, isNotionClientError, RequestTimeoutError } from "@notionhq/client";
 import { Hono } from "hono";
-import type { AppEnv } from "./env";
+import type { AppEnv, Bindings } from "./env";
 import { describeError, log } from "./lib/log";
 import { buildErrorBody } from "./lib/response";
+import { apiKeyAuth } from "./middleware/auth";
 import { requestContext } from "./middleware/request-context";
 import { expensesRoute } from "./routes/expenses";
+import { summaryRoute } from "./routes/summary";
+import { createNotionServiceFromEnv, refreshRecentSummaries } from "./services/summary-refresh";
+import { EXPENSE_CATEGORIES, PAYMENT_METHODS, UNCATEGORIZED } from "./types/expense";
 
 const app = new Hono<AppEnv>();
 
@@ -14,7 +18,18 @@ app.use("*", requestContext);
 app.get("/", (c) => c.text("OK"));
 app.get("/health", (c) => c.json({ status: "ok" }));
 
+// ショートカット側で選択肢を組み立てられるように、受け付ける値を返す。
+app.get("/categories", apiKeyAuth, (c) =>
+	c.json({
+		success: true,
+		categories: EXPENSE_CATEGORIES,
+		uncategorized: UNCATEGORIZED,
+		paymentMethods: PAYMENT_METHODS,
+	}),
+);
+
 app.route("/expenses", expensesRoute);
+app.route("/summary", summaryRoute);
 
 app.notFound((c) => c.json(buildErrorBody("not_found", "エンドポイントが存在しません。", c.get("requestId")), 404));
 
@@ -49,4 +64,31 @@ app.onError((err, c) => {
 	return c.json(buildErrorBody("internal_error", "サーバ内部でエラーが発生しました。", requestId), 500);
 });
 
-export default app;
+/**
+ * 定期実行。今月と前月のサマリページを最新化する。
+ * 内容が変わっていなければ何も書かないので、頻繁に走っても
+ * Notion の更新履歴は汚れない。手動更新（GET /summary）を待たずに
+ * 「後から資産額を記入した」ケースを拾える。
+ */
+async function scheduled(event: ScheduledController, env: Bindings) {
+	const startedAt = Date.now();
+
+	try {
+		const results = await refreshRecentSummaries(createNotionServiceFromEnv(env));
+
+		log("info", "summary_cron", {
+			cron: event.cron,
+			durationMs: Date.now() - startedAt,
+			total: results.length,
+			changed: results.filter((result) => result.status !== "unchanged").length,
+			pages: results.map((result) => ({ month: result.month, status: result.status })),
+		});
+	} catch (error) {
+		log("error", "summary_cron_failed", { cron: event.cron, ...describeError(error) });
+	}
+}
+
+export default {
+	fetch: app.fetch,
+	scheduled,
+};
