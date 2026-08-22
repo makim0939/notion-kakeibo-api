@@ -1,11 +1,18 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
 import { todayInJst } from "../lib/date";
+import { describeError, log } from "../lib/log";
 import { buildErrorBody, toFieldErrors } from "../lib/response";
 import { apiKeyAuth } from "../middleware/auth";
-import { buildCategoryKeywordMap, decideCategory } from "../services/category";
+import { buildCategoryIndex, decideCategory } from "../services/category";
 import { createNotionService } from "../services/notion";
 import { expenseSchema } from "../validators/expense";
+
+/**
+ * カテゴリ学習に使う履歴の件数。
+ * DB 全件を舐めると登録が件数に比例して遅くなるため、直近ぶんだけを見る。
+ */
+const CATEGORY_HISTORY_LIMIT = 300;
 
 export const expensesRoute = new Hono<AppEnv>();
 
@@ -40,10 +47,8 @@ expensesRoute.post("/", async (c) => {
 	});
 
 	// カテゴリは自動決定に対応するため、リクエストに含まれないことを許容している。
-	// リクエストにカテゴリが含まれない場合はここで決定する。
-	const historyRecords = await notionService.fetchExpenseCategoryRecords();
-	const keywordMap = buildCategoryKeywordMap(historyRecords);
-	const category = expense.category ?? decideCategory(expense.name, keywordMap);
+	// 指定がある場合は履歴を引かずにそのまま使う（無駄な Notion 呼び出しを避ける）。
+	const category = expense.category ?? (await autoCategory(notionService, expense.name, requestId));
 
 	// fetchSummaryIdByDate は getFullYear/getMonth（Workers では UTC）で月を判定するため、
 	// 購入日を UTC 0時として渡す。JST 補正を掛けると月初が前月にずれる。
@@ -65,3 +70,22 @@ expensesRoute.post("/", async (c) => {
 		},
 	});
 });
+
+/**
+ * 支出名からカテゴリを推定する。
+ * 履歴の取得に失敗しても登録自体は通したいので、静的キーワードだけで判定する
+ * フォールバックに切り替える。
+ */
+async function autoCategory(
+	notionService: ReturnType<typeof createNotionService>,
+	name: string,
+	requestId: string,
+): Promise<string> {
+	try {
+		const history = await notionService.fetchExpenseCategoryRecords(CATEGORY_HISTORY_LIMIT);
+		return decideCategory(name, buildCategoryIndex(history));
+	} catch (error) {
+		log("warn", "category_history_unavailable", { requestId, ...describeError(error) });
+		return decideCategory(name, buildCategoryIndex([]));
+	}
+}
