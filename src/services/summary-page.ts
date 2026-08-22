@@ -3,30 +3,51 @@ import type { SummaryValues } from "../types/summary";
 import type { ExpenseBreakdown } from "./expense-breakdown";
 
 /**
- * 自動生成セクションの開始位置。この見出しから下、フッタまでが毎回作り直される。
- * 見出し自体は月によらず固定文言にして、目印として探せるようにしている。
+ * 自動生成セクションの開始位置。ページ先頭のこの行から下が毎回作り直される。
+ * 最終更新をここに置いているのは、ページを開いてすぐ鮮度が分かるようにするため。
  */
-export const MANAGED_HEADING = "📊 月次サマリ";
+export const MANAGED_MARKER_PREFIX = "🔄 最終更新 ";
 
-/**
- * 自動生成セクションの終端。最終更新時刻を添える。
- * 開始と終端で挟むことで、ユーザが下に書き足した内容を巻き込まずに差し替えられる。
- */
-export const MANAGED_FOOTER_PREFIX = "最終更新 ";
-
-export function buildFooterText(updatedAt: string): string {
-	return `${MANAGED_FOOTER_PREFIX}${updatedAt}`;
+export function buildMarkerText(updatedAt: string): string {
+	return `${MANAGED_MARKER_PREFIX}${updatedAt}`;
 }
 
-/** 文字色つきの文字列。金額を色で読み取れるようにするために使う。 */
-type Span = { text: string; color?: "gray" | "green" | "red" };
+/** 見出しの文字色。ページのテンプレートに合わせている。 */
+const HEADING_COLOR = "blue";
+
+/** Notion「支出」DB のカテゴリに設定されているセレクトの色。バーの色をこれに揃える。 */
+const CATEGORY_COLOR: Record<string, NotionColor> = {
+	"日用・食費": "orange",
+	居住費: "blue",
+	生活費: "green",
+	遊び費: "yellow",
+	仕事勉強費: "purple",
+	旅行費: "red",
+	特別費: "pink",
+	投資: "brown",
+	未分類: "gray",
+};
+
+/** カテゴリ色が未登録の場合の色。 */
+const FALLBACK_COLOR: NotionColor = "gray";
+
+/** 比率バーの長さ（マス数）。モバイルで折り返さない範囲で最大にしている。 */
+const BAR_CELLS = 14;
+
+/** 1マスを8等分する部分ブロック。細い順。1マス未満の差も表現できる。 */
+const PARTIAL_BLOCKS = ["▏", "▎", "▍", "▌", "▋", "▊", "▉"];
+
+type NotionColor = "default" | "gray" | "brown" | "orange" | "yellow" | "green" | "blue" | "purple" | "pink" | "red";
+
+/** 文字色や等幅指定つきの文字列。 */
+type Span = { text: string; color?: NotionColor; code?: boolean };
 
 /**
  * サマリ本文のブロックを組み立てる。
  * Notion に触らない純粋な関数なので、そのままテストできる。
  *
- * 並びと段組みはページのテンプレートに合わせている。
- * 色の使い方は「前月＝グレー、増えた＝緑、減った＝赤」で統一する。
+ * 並び・段組み・色はページのテンプレートに合わせている。
+ * 色の使い方は「前月＝グレー、増えた＝緑、減った＝赤、補足＝グレー」で統一する。
  */
 export function renderSummaryBlocks(
 	values: SummaryValues,
@@ -34,19 +55,17 @@ export function renderSummaryBlocks(
 	updatedAt = "",
 ): BlockObjectRequest[] {
 	return [
-		heading1(MANAGED_HEADING),
-		...goalBlocks(values),
+		paragraph([{ text: buildMarkerText(updatedAt), color: "gray" }]),
+		goalCallout(values),
 		...assetBlocks(values),
 		divider(),
 		...balanceBlocks(values),
 		...categoryBlocks(breakdown),
-		divider(),
-		paragraph([{ text: buildFooterText(updatedAt), color: "gray" }]),
 	];
 }
 
 /** 今月の目標と、その達成状況。 */
-function goalBlocks(values: SummaryValues): BlockObjectRequest[] {
+function goalCallout(values: SummaryValues): BlockObjectRequest {
 	const todos: BlockObjectRequest[] = [];
 
 	if (values.expenseGoal !== null) {
@@ -66,7 +85,13 @@ function goalBlocks(values: SummaryValues): BlockObjectRequest[] {
 		);
 	}
 
-	return [heading("目標達成状況"), ...(todos.length === 0 ? [paragraph([{ text: "目標が未設定です。" }])] : todos)];
+	return {
+		callout: {
+			rich_text: richText([{ text: "目標達成状況", color: HEADING_COLOR }]),
+			icon: { emoji: "⛳" },
+			children: todos.length === 0 ? [paragraph([{ text: "目標が未設定です。" }])] : todos,
+		},
+	} as BlockObjectRequest;
 }
 
 /** 資産推移。合計を上に出し、内訳の貯金と投資を左右に並べる。 */
@@ -81,22 +106,24 @@ function assetBlocks(values: SummaryValues): BlockObjectRequest[] {
 	];
 }
 
-/** 収支。差額を上に出し、内訳の収入と支出を左右に並べる。 */
+/** 収支。ラベルの「：」を縦に揃えたいので、短い「収支」だけ空白で幅を合わせる。 */
 function balanceBlocks(values: SummaryValues): BlockObjectRequest[] {
-	const expense: BlockObjectRequest[] = [heading3("総支出"), paragraph([{ text: yen(values.expense) }])];
+	const expense: Span[] = [{ text: `総支出：${yen(values.expense)}` }];
 
 	if (values.discretionaryExpense !== null) {
-		expense.push(paragraph([{ text: `うち住居・食費以外 ${yen(values.discretionaryExpense)}`, color: "gray" }]));
+		expense.push({ text: "\n" }, { text: `うち住居・食費以外：${yen(values.discretionaryExpense)}`, color: "gray" });
 	}
 
 	return [
 		heading("収支"),
-		paragraph(signed(difference(values.income, values.expense))),
-		columns([[heading3("総収入"), paragraph([{ text: yen(values.income) }])], expense]),
+		paragraph([{ text: `総収入：${yen(values.income)}` }]),
+		paragraph(expense),
+		paragraph([{ text: "収支    ：" }, ...signed(difference(values.income, values.expense))]),
+		divider(),
 	];
 }
 
-/** カテゴリ別の支出額。何にいくら使ったかを一覧で見るための表。 */
+/** カテゴリ別の支出額。金額に加えて、最大カテゴリを基準にしたバーで比率を出す。 */
 function categoryBlocks(breakdown: ExpenseBreakdown | null): BlockObjectRequest[] {
 	if (!breakdown) {
 		return [];
@@ -105,12 +132,20 @@ function categoryBlocks(breakdown: ExpenseBreakdown | null): BlockObjectRequest[
 		return [heading("カテゴリ別の支出"), paragraph([{ text: "この月の支出はまだありません。" }])];
 	}
 
-	// 一目で「何にいくら」だけ分かればよいので、列は2つに絞る。
-	const rows = breakdown.rows.map((row) => tableRow([row.category, `${groupDigits(row.total)} 円`]));
+	const max = Math.max(...breakdown.rows.map((row) => row.total));
 
 	return [
 		heading("カテゴリ別の支出"),
-		table(["カテゴリ", "金額"], [...rows, tableRow(["合計", `${groupDigits(breakdown.total)} 円`])]),
+		table(
+			["カテゴリ", "金額", "比率"],
+			breakdown.rows.map((row) =>
+				tableRow([
+					[{ text: row.category }],
+					[{ text: `${groupDigits(row.total)} 円` }],
+					[...bar(row.total, max, CATEGORY_COLOR[row.category] ?? FALLBACK_COLOR), { text: ` ${row.ratio}%` }],
+				]),
+			),
+		),
 		...(breakdown.investment === null
 			? []
 			: [
@@ -122,6 +157,35 @@ function categoryBlocks(breakdown: ExpenseBreakdown | null): BlockObjectRequest[
 					]),
 				]),
 	];
+}
+
+/**
+ * 比率バー。最大のカテゴリが満杯になるよう正規化する。
+ *
+ * 全体に対する比率で引くと下位カテゴリが1マスに潰れて差が見えないため、
+ * 最大値を基準にして解像度を稼いでいる。実際の割合は隣に % で出す。
+ * 端数は部分ブロックで表すので、1マスあたり8段階の細かさで描ける。
+ *
+ * 塗りも余白も同じ幅の文字だけで組み、等幅指定を添える。
+ * Notion の本文フォントはこれらの文字を持たず、環境ごとに別のフォントへ
+ * 落ちるため、指定しないと文字ごとに幅が変わって右端がガタつく。
+ */
+function bar(value: number, max: number, color: NotionColor): Span[] {
+	const eighths = max === 0 ? 0 : Math.max(1, Math.round((value / max) * BAR_CELLS * 8));
+	const full = Math.floor(eighths / 8);
+	const remainder = eighths % 8;
+
+	const filled = "█".repeat(full) + (remainder ? PARTIAL_BLOCKS[remainder - 1] : "");
+	const empty = "░".repeat(BAR_CELLS - full - (remainder ? 1 : 0));
+
+	const spans: Span[] = [];
+	if (filled) {
+		spans.push({ text: filled, color, code: true });
+	}
+	if (empty) {
+		spans.push({ text: empty, color: "gray", code: true });
+	}
+	return spans;
 }
 
 /**
@@ -183,22 +247,24 @@ function groupDigits(value: number): string {
 }
 
 function richText(spans: Span[]) {
-	return spans.map((span) => ({
-		text: { content: span.text },
-		...(span.color ? { annotations: { color: span.color } } : {}),
-	}));
-}
-
-function heading1(text: string): BlockObjectRequest {
-	return { heading_1: { rich_text: [{ text: { content: text } }] } };
+	return spans.map((span) => {
+		const annotations = {
+			...(span.color ? { color: span.color } : {}),
+			...(span.code ? { code: true } : {}),
+		};
+		return {
+			text: { content: span.text },
+			...(Object.keys(annotations).length > 0 ? { annotations } : {}),
+		};
+	});
 }
 
 function heading(text: string): BlockObjectRequest {
-	return { heading_2: { rich_text: [{ text: { content: text } }] } };
+	return { heading_2: { rich_text: richText([{ text, color: HEADING_COLOR }]) } };
 }
 
 function heading3(text: string): BlockObjectRequest {
-	return { heading_3: { rich_text: [{ text: { content: text } }] } };
+	return { heading_3: { rich_text: richText([{ text, color: HEADING_COLOR }]) } };
 }
 
 function paragraph(spans: Span[]): BlockObjectRequest {
@@ -213,7 +279,7 @@ function divider(): BlockObjectRequest {
 	return { divider: {} };
 }
 
-/** 左右に並べる段組み。テンプレートの見た目に合わせるために使う。 */
+/** 左右に並べる段組み。 */
 function columns(children: BlockObjectRequest[][]): BlockObjectRequest {
 	return {
 		column_list: {
@@ -222,8 +288,8 @@ function columns(children: BlockObjectRequest[][]): BlockObjectRequest {
 	} as BlockObjectRequest;
 }
 
-function tableRow(cells: string[]): BlockObjectRequest {
-	return { table_row: { cells: cells.map((cell) => [{ text: { content: cell } }]) } };
+export function tableRow(cells: Span[][]): BlockObjectRequest {
+	return { table_row: { cells: cells.map((cell) => richText(cell)) } };
 }
 
 function table(header: string[], rows: BlockObjectRequest[]): BlockObjectRequest {
@@ -231,9 +297,18 @@ function table(header: string[], rows: BlockObjectRequest[]): BlockObjectRequest
 		table: {
 			table_width: header.length,
 			has_column_header: true,
-			children: [tableRow(header), ...rows],
+			children: [tableRow(header.map((text) => [{ text }])), ...rows],
 		},
 	} as BlockObjectRequest;
+}
+
+/**
+ * Notion 上のテキストを比較用にならす。
+ * 絵文字の直後などに Notion がノーブレークスペースを入れることがあり、
+ * 見た目が同じでも普通の空白と一致しなくなるため、ここで吸収する。
+ */
+export function normalizeNotionText(text: string): string {
+	return text.replaceAll("\u00a0", " ");
 }
 
 /** Notion から読んだ既存ブロック。表の行や段組みの中身を比較するため子も持つ。 */
@@ -285,10 +360,11 @@ export function signatureOfExisting(blocks: ExistingBlock[], depth = 0): string 
 				  }
 				| undefined;
 
-			const text =
+			const text = normalizeNotionText(
 				body?.rich_text?.map((part) => part.plain_text).join("") ??
-				body?.cells?.map((cell) => cell.map((part) => part.plain_text).join("")).join("\t") ??
-				"";
+					body?.cells?.map((cell) => cell.map((part) => part.plain_text).join("")).join("\t") ??
+					"",
+			);
 
 			const self = `${"  ".repeat(depth)}${block.type}\t${body?.checked ?? ""}\t${text}`;
 			const children = block.children ? signatureOfExisting(block.children, depth + 1) : "";

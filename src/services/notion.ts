@@ -7,7 +7,7 @@ import { UNCATEGORIZED } from "../types/expense";
 import type { SummaryValues } from "../types/summary";
 import { ACHIEVED_MARK, SUMMARY_PROPERTY } from "../types/summary";
 import type { ExistingBlock } from "./summary-page";
-import { MANAGED_FOOTER_PREFIX, MANAGED_HEADING, signatureOfExisting, summarySignature } from "./summary-page";
+import { MANAGED_MARKER_PREFIX, normalizeNotionText, signatureOfExisting, summarySignature } from "./summary-page";
 
 /**
  * Notion 呼び出しのタイムアウト。SDK の既定は60秒だが、
@@ -315,48 +315,125 @@ export async function replaceSummarySection(
 	const region = findManagedRegion(children);
 
 	if (!region) {
-		// ページ先頭に置く。リンクドDBビューより上に来るので、
-		// 開いてすぐ数字が目に入る。
+		// ページ先頭に置く。リンクドDBビューより上に来るので、開いてすぐ数字が目に入る。
 		await appendInChunks(notion, pageId, blocks, { type: "start" });
 		return { status: "created" };
 	}
 
 	const existing = children.slice(region.start, region.end + 1);
 
-	// 末尾のフッタは最終更新時刻なので毎回変わる。比較からは外す。
-	if (signatureOfExisting(existing.slice(0, -1)) === summarySignature(blocks.slice(0, -1))) {
+	// 先頭の目印は最終更新時刻なので毎回変わる。比較からは外す。
+	if (signatureOfExisting(existing.slice(1)) === summarySignature(blocks.slice(1))) {
 		return { status: "unchanged" };
 	}
 
-	for (const block of existing) {
-		await notion.blocks.delete({ block_id: block.id });
-	}
-	await appendInChunks(notion, pageId, blocks, positionOf(children, region.start));
+	await rewriteRegion(notion, pageId, children, region, existing, blocks);
 
 	return { status: "updated" };
 }
 
 /**
+ * 管理範囲を作り直す。
+ *
+ * 表だけは作り直さずに中身を書き換える。表の列幅は Notion API から
+ * 読むことも書くこともできず、作り直すと手で調整した幅が失われるため。
+ */
+async function rewriteRegion(
+	notion: Client,
+	pageId: string,
+	children: ExistingBlock[],
+	region: { start: number; end: number },
+	existing: ExistingBlock[],
+	blocks: BlockObjectRequest[],
+): Promise<void> {
+	const currentTable = existing.find((block) => block.type === "table");
+	const nextIndex = blocks.findIndex((block) => "table" in block);
+	const nextTable = nextIndex === -1 ? undefined : blocks[nextIndex];
+
+	// 表が無い、または列数が変わった場合は作り直すしかない。
+	if (!currentTable || !nextTable || !sameTableWidth(currentTable, nextTable)) {
+		for (const block of existing) {
+			await notion.blocks.delete({ block_id: block.id });
+		}
+		await appendInChunks(notion, pageId, blocks, positionOf(children, region.start));
+		return;
+	}
+
+	for (const block of existing) {
+		if (block.id !== currentTable.id) {
+			await notion.blocks.delete({ block_id: block.id });
+		}
+	}
+
+	await appendInChunks(notion, pageId, blocks.slice(0, nextIndex), positionOf(children, region.start));
+	await updateTableRows(notion, currentTable, nextTable);
+	await appendInChunks(notion, pageId, blocks.slice(nextIndex + 1), {
+		type: "after_block",
+		after_block: { id: currentTable.id },
+	});
+}
+
+function sameTableWidth(current: ExistingBlock, next: BlockObjectRequest): boolean {
+	const currentWidth = (current.table as { table_width?: number } | undefined)?.table_width;
+	const nextWidth = ("table" in next ? (next.table as { table_width?: number }) : undefined)?.table_width;
+	return currentWidth !== undefined && currentWidth === nextWidth;
+}
+
+/** 表の行を上から順に書き換える。過不足は行の追加・削除で合わせる。 */
+async function updateTableRows(notion: Client, current: ExistingBlock, next: BlockObjectRequest): Promise<void> {
+	const currentRows = current.children ?? [];
+	const nextRows = (next as { table: { children: BlockObjectRequest[] } }).table.children;
+	const shared = Math.min(currentRows.length, nextRows.length);
+
+	for (let index = 0; index < shared; index += 1) {
+		const row = nextRows[index] as { table_row: unknown };
+		await notion.blocks.update({
+			block_id: currentRows[index].id,
+			table_row: row.table_row,
+		} as Parameters<typeof notion.blocks.update>[0]);
+	}
+
+	if (nextRows.length > shared) {
+		await notion.blocks.children.append({
+			block_id: current.id,
+			children: nextRows.slice(shared),
+		});
+	}
+
+	for (const row of currentRows.slice(nextRows.length)) {
+		await notion.blocks.delete({ block_id: row.id });
+	}
+}
+
+/**
  * 自動生成セクションの範囲を探す。
- * 固定文言の見出しで始まり、「最終更新」のフッタで終わる。
- * この2つで挟むことで、ユーザがページに書き足した内容を巻き込まずに差し替えられる。
+ *
+ * ページ先頭の「🔄 最終更新 …」から始まり、テンプレート由来のブロックの手前で終わる。
+ * 終端の目印を別に置くとページに余計な行が増えるので、こちらが生成しない
+ * 種類のブロック（見出し3・リンクドDBビュー）が現れた時点を境界とみなす。
+ * 区切り線はどちらの持ち物か判別できないため、末尾のものは範囲に含めない。
  */
 function findManagedRegion(blocks: ExistingBlock[]): { start: number; end: number } | undefined {
-	const start = blocks.findIndex((block) => block.type === "heading_1" && plainTextOf(block) === MANAGED_HEADING);
+	const start = blocks.findIndex(
+		(block) => block.type === "paragraph" && plainTextOf(block).startsWith(MANAGED_MARKER_PREFIX),
+	);
 	if (start === -1) {
 		return undefined;
 	}
 
+	let end = start;
 	for (let index = start + 1; index < blocks.length; index += 1) {
-		const block = blocks[index];
-		if (block.type === "paragraph" && plainTextOf(block).startsWith(MANAGED_FOOTER_PREFIX)) {
-			return { start, end: index };
+		if (blocks[index].type === "heading_3" || blocks[index].type === "child_database") {
+			break;
 		}
+		end = index;
 	}
 
-	// フッタが見つからない場合は見出しだけを差し替え対象にする。
-	// 直前の実行が途中で落ちた場合などに、本文を丸ごと消してしまわないための保険。
-	return { start, end: start };
+	while (end > start && blocks[end].type === "divider") {
+		end -= 1;
+	}
+
+	return { start, end };
 }
 
 /** 削除した位置にそのまま書き戻すための挿入位置。 */
@@ -367,7 +444,7 @@ function positionOf(blocks: ExistingBlock[], start: number): ContentPosition {
 
 function plainTextOf(block: ExistingBlock): string {
 	const body = block[block.type] as { rich_text?: { plain_text: string }[] } | undefined;
-	return body?.rich_text?.map((part) => part.plain_text).join("") ?? "";
+	return normalizeNotionText(body?.rich_text?.map((part) => part.plain_text).join("") ?? "");
 }
 
 /**
