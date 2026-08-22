@@ -18,11 +18,15 @@ export function buildFooterText(updatedAt: string): string {
 	return `${MANAGED_FOOTER_PREFIX}${updatedAt}`;
 }
 
+/** 文字色つきの文字列。金額を色で読み取れるようにするために使う。 */
+type Span = { text: string; color?: "gray" | "green" | "red" };
+
 /**
  * サマリ本文のブロックを組み立てる。
  * Notion に触らない純粋な関数なので、そのままテストできる。
  *
- * 見出しと短い表だけで構成し、1画面で読み切れる分量に収めている。
+ * 並びと段組みはページのテンプレートに合わせている。
+ * 色の使い方は「前月＝グレー、増えた＝緑、減った＝赤」で統一する。
  */
 export function renderSummaryBlocks(
 	values: SummaryValues,
@@ -32,11 +36,12 @@ export function renderSummaryBlocks(
 	return [
 		heading1(MANAGED_HEADING),
 		...goalBlocks(values),
-		...balanceBlocks(values),
 		...assetBlocks(values),
+		divider(),
+		...balanceBlocks(values),
 		...categoryBlocks(breakdown),
 		divider(),
-		paragraph(buildFooterText(updatedAt)),
+		paragraph([{ text: buildFooterText(updatedAt), color: "gray" }]),
 	];
 }
 
@@ -61,41 +66,34 @@ function goalBlocks(values: SummaryValues): BlockObjectRequest[] {
 		);
 	}
 
-	return [heading("目標"), ...(todos.length === 0 ? [paragraph("目標が未設定です。")] : todos)];
+	return [heading("目標達成状況"), ...(todos.length === 0 ? [paragraph([{ text: "目標が未設定です。" }])] : todos)];
 }
 
-/** 収入と支出。差額まで1つの表で見えるようにする。 */
-function balanceBlocks(values: SummaryValues): BlockObjectRequest[] {
-	const rows = [
-		tableRow(["総収入", yen(values.income)]),
-		tableRow(["総支出", yen(values.expense)]),
-		tableRow(["差額", signedYen(difference(values.income, values.expense))]),
-	];
-
-	if (values.discretionaryExpense !== null) {
-		rows.push(tableRow(["うち住居・食費以外", yen(values.discretionaryExpense)]));
-	}
-
-	return [heading("収支"), table(["項目", "金額"], rows)];
-}
-
-/** 資産の増減。前月と並べて置くことで、増えたのか減ったのかを一目で分かるようにする。 */
+/** 資産推移。合計を上に出し、内訳の貯金と投資を左右に並べる。 */
 function assetBlocks(values: SummaryValues): BlockObjectRequest[] {
 	return [
-		heading("資産"),
-		table(
-			["項目", "前月", "今月", "増減"],
-			[
-				assetRow("貯金口座", values.previousSavings, values.savings),
-				assetRow("積立投信", values.previousInvestment, values.investment),
-				assetRow("合計", values.previousTotalAssets, currentTotalAssets(values)),
-			],
-		),
+		heading("資産推移"),
+		paragraph(transition(values.previousTotalAssets, currentTotalAssets(values))),
+		columns([
+			[heading3("貯金口座"), paragraph(transition(values.previousSavings, values.savings))],
+			[heading3("積立投信"), paragraph(transition(values.previousInvestment, values.investment))],
+		]),
 	];
 }
 
-function assetRow(label: string, previous: number | null, current: number | null): BlockObjectRequest {
-	return tableRow([label, yen(previous), yen(current), signedYen(difference(current, previous))]);
+/** 収支。差額を上に出し、内訳の収入と支出を左右に並べる。 */
+function balanceBlocks(values: SummaryValues): BlockObjectRequest[] {
+	const expense: BlockObjectRequest[] = [heading3("総支出"), paragraph([{ text: yen(values.expense) }])];
+
+	if (values.discretionaryExpense !== null) {
+		expense.push(paragraph([{ text: `うち住居・食費以外 ${yen(values.discretionaryExpense)}`, color: "gray" }]));
+	}
+
+	return [
+		heading("収支"),
+		paragraph(signed(difference(values.income, values.expense))),
+		columns([[heading3("総収入"), paragraph([{ text: yen(values.income) }])], expense]),
+	];
 }
 
 /** カテゴリ別の支出額。何にいくら使ったかを一覧で見るための表。 */
@@ -104,11 +102,10 @@ function categoryBlocks(breakdown: ExpenseBreakdown | null): BlockObjectRequest[
 		return [];
 	}
 	if (breakdown.rows.length === 0) {
-		return [heading("カテゴリ別の支出"), paragraph("この月の支出はまだありません。")];
+		return [heading("カテゴリ別の支出"), paragraph([{ text: "この月の支出はまだありません。" }])];
 	}
 
 	// 一目で「何にいくら」だけ分かればよいので、列は2つに絞る。
-	// 構成比は円グラフのビューに任せ、表には出さない。
 	const rows = breakdown.rows.map((row) => tableRow([row.category, `${groupDigits(row.total)} 円`]));
 
 	return [
@@ -116,7 +113,14 @@ function categoryBlocks(breakdown: ExpenseBreakdown | null): BlockObjectRequest[
 		table(["カテゴリ", "金額"], [...rows, tableRow(["合計", `${groupDigits(breakdown.total)} 円`])]),
 		...(breakdown.investment === null
 			? []
-			: [paragraph(`※ 積立投資 ${groupDigits(breakdown.investment)} 円 は資産の移動なので支出に含めていません。`)]),
+			: [
+					paragraph([
+						{
+							text: `※ 積立投資 ${groupDigits(breakdown.investment)} 円 は資産の移動なので支出に含めていません。`,
+							color: "gray",
+						},
+					]),
+				]),
 	];
 }
 
@@ -129,6 +133,26 @@ function currentTotalAssets(values: SummaryValues): number | null {
 		return null;
 	}
 	return values.totalAssets;
+}
+
+/** 「前月 → 今月 (増減)」の1行。前月をグレーに落として、今月の数字を目立たせる。 */
+function transition(previous: number | null, current: number | null): Span[] {
+	const diff = difference(current, previous);
+	const spans: Span[] = [{ text: `${yen(previous)} → `, color: "gray" }, { text: yen(current) }];
+
+	if (diff !== null) {
+		spans.push({ text: " (" }, ...signed(diff), { text: ")" });
+	}
+
+	return spans;
+}
+
+/** 増減の表記。増えていれば緑、減っていれば赤。 */
+function signed(value: number | null): Span[] {
+	if (value === null) {
+		return [{ text: "未入力" }];
+	}
+	return [{ text: signedYen(value), color: value >= 0 ? "green" : "red" }];
 }
 
 function difference(a: number | null, b: number | null): number | null {
@@ -158,24 +182,44 @@ function groupDigits(value: number): string {
 	return negative ? `-${grouped}` : grouped;
 }
 
-function heading1(text: string): BlockObjectRequest {
-	return { heading_1: { rich_text: [{ text: { content: text } }] } };
+function richText(spans: Span[]) {
+	return spans.map((span) => ({
+		text: { content: span.text },
+		...(span.color ? { annotations: { color: span.color } } : {}),
+	}));
 }
 
-function divider(): BlockObjectRequest {
-	return { divider: {} };
+function heading1(text: string): BlockObjectRequest {
+	return { heading_1: { rich_text: [{ text: { content: text } }] } };
 }
 
 function heading(text: string): BlockObjectRequest {
 	return { heading_2: { rich_text: [{ text: { content: text } }] } };
 }
 
-function paragraph(text: string): BlockObjectRequest {
-	return { paragraph: { rich_text: [{ text: { content: text } }] } };
+function heading3(text: string): BlockObjectRequest {
+	return { heading_3: { rich_text: [{ text: { content: text } }] } };
+}
+
+function paragraph(spans: Span[]): BlockObjectRequest {
+	return { paragraph: { rich_text: richText(spans) } };
 }
 
 function todo(text: string, checked: boolean): BlockObjectRequest {
 	return { to_do: { rich_text: [{ text: { content: text } }], checked } };
+}
+
+function divider(): BlockObjectRequest {
+	return { divider: {} };
+}
+
+/** 左右に並べる段組み。テンプレートの見た目に合わせるために使う。 */
+function columns(children: BlockObjectRequest[][]): BlockObjectRequest {
+	return {
+		column_list: {
+			children: children.map((blocks) => ({ column: { children: blocks } })),
+		},
+	} as BlockObjectRequest;
 }
 
 function tableRow(cells: string[]): BlockObjectRequest {
@@ -192,7 +236,7 @@ function table(header: string[], rows: BlockObjectRequest[]): BlockObjectRequest
 	} as BlockObjectRequest;
 }
 
-/** Notion から読んだ既存ブロック。表の行を比較するため子も持つ。 */
+/** Notion から読んだ既存ブロック。表の行や段組みの中身を比較するため子も持つ。 */
 export type ExistingBlock = {
 	id: string;
 	type: string;
@@ -202,9 +246,8 @@ export type ExistingBlock = {
 
 /**
  * ブロック列を比較用の文字列に潰す。
- * 見出しの最終更新時刻は毎回変わるので比較対象に含めず、本文だけを比べる。
  * これで「中身が変わっていないのに書き換える」のを防ぐ。
- * 表は行が子ブロックになるため、子までたどって比較する。
+ * 表の行や段組みの中身は子ブロックになるため、子までたどって比較する。
  */
 export function summarySignature(blocks: BlockObjectRequest[]): string {
 	return blocks.map((block) => signatureOfRequest(block)).join("\n");

@@ -371,35 +371,14 @@ function plainTextOf(block: ExistingBlock): string {
 }
 
 /**
- * ページ直下のブロックを読む。
- * 表は行が子ブロックになるので中身まで取る
- * （中まで見ないと「表の数値が変わったのに変化なし」と誤判定する）。
- * リンクドDBビューは子を辿れないので触らない。
+ * ページのブロックを読む。
+ * 表の行は1段、段組みは「列 → 中身」で2段ぶら下がるので、そこまで潜って読む
+ * （中まで見ないと「数値が変わったのに変化なし」と誤判定する）。
  */
-async function listPageBlocks(notion: Client, pageId: string): Promise<ExistingBlock[]> {
-	const blocks: ExistingBlock[] = [];
-	let cursor: string | undefined;
+const MANAGED_BLOCK_DEPTH = 2;
 
-	do {
-		const response = await notion.blocks.children.list({
-			block_id: pageId,
-			start_cursor: cursor,
-			page_size: NOTION_PAGE_SIZE,
-		});
-		for (const block of response.results) {
-			if (!("type" in block)) {
-				continue;
-			}
-			const entry = block as unknown as ExistingBlock;
-			if (block.type === "table" && block.has_children) {
-				entry.children = await listChildren(notion, block.id);
-			}
-			blocks.push(entry);
-		}
-		cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
-	} while (cursor);
-
-	return blocks;
+function listPageBlocks(notion: Client, pageId: string): Promise<ExistingBlock[]> {
+	return listChildren(notion, pageId, MANAGED_BLOCK_DEPTH);
 }
 
 /**
@@ -407,7 +386,7 @@ async function listPageBlocks(notion: Client, pageId: string): Promise<ExistingB
  * 表は行が子ブロックになるので、1段だけ潜って中身も取る
  * （中身まで見ないと「表の数値が変わったのに変化なし」と誤判定するため）。
  */
-async function listChildren(notion: Client, blockId: string, depth = 0): Promise<ExistingBlock[]> {
+async function listChildren(notion: Client, blockId: string, remainingDepth: number): Promise<ExistingBlock[]> {
 	const blocks: ExistingBlock[] = [];
 	let cursor: string | undefined;
 
@@ -422,8 +401,9 @@ async function listChildren(notion: Client, blockId: string, depth = 0): Promise
 				continue;
 			}
 			const entry = block as unknown as ExistingBlock;
-			if (depth === 0 && block.has_children) {
-				entry.children = await listChildren(notion, block.id, depth + 1);
+			// リンクドDBビューは子を辿れないので触らない。
+			if (block.has_children && remainingDepth > 0 && block.type !== "child_database") {
+				entry.children = await listChildren(notion, block.id, remainingDepth - 1);
 			}
 			blocks.push(entry);
 		}
