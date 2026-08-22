@@ -12,12 +12,13 @@ export const DEFAULT_PAYMENT_METHOD: PaymentMethod = "カード";
  */
 export const EXPENSE_CATEGORIES = [
 	"日用・食費",
-	"住居費",
+	"居住費",
 	"生活費",
 	"遊び費",
 	"仕事勉強費",
 	"旅行費",
 	"特別費",
+	"投資",
 ] as const;
 
 export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
@@ -42,4 +43,13 @@ export type ExpenseRequest = {
 export type CategoryHistoryRecord = {
 	名前: string;
 	カテゴリ: string;
+};
+
+/** 月次サマリの集計に使う、支出1件の最小情報。 */
+export type MonthlyExpense = {
+	name: string;
+	amount: number;
+	category: string;
+	/** YYYY-MM-DD。日付未設定なら null。 */
+	date: string | null;
 };
