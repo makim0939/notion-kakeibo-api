@@ -1,14 +1,127 @@
 import { z } from "zod";
-import { PAYMENT_METHODS } from "../types/expense";
+import { isValidDate, isValidMonth } from "../lib/date";
+import {
+	DEFAULT_PAYMENT_METHOD,
+	EXPENSE_AMOUNT_MAX,
+	EXPENSE_CATEGORIES,
+	EXPENSE_NAME_MAX_LENGTH,
+	PAYMENT_METHODS,
+} from "../types/expense";
 
+/** 一覧取得の1リクエストあたり最大件数。 */
+export const MAX_LIST_LIMIT = 100;
+
+/** 支払い方法の別名。iPhone ショートカット側の表記ゆれを吸収する。 */
+const PAYMENT_METHOD_ALIASES: Record<string, string> = {
+	card: "カード",
+	クレジット: "カード",
+	クレカ: "カード",
+	cash: "現金",
+	げんきん: "現金",
+};
+
+/**
+ * 金額。OCR やショートカットからは "¥1,200" のような文字列で渡ることがあるため、
+ * 記号・区切り・全角数字を落としてから数値として検証する。
+ * 返金の記録に使えるよう負の値は許容し、0 と小数だけを弾く。
+ */
+const amountSchema = z.preprocess(
+	(value) => {
+		if (typeof value !== "string") {
+			return value;
+		}
+
+		const normalized = value
+			.normalize("NFKC")
+			.replace(/[¥￥,\s]/g, "")
+			.replace(/円$/, "");
+
+		if (normalized === "") {
+			return value;
+		}
+
+		const parsed = Number(normalized);
+		return Number.isNaN(parsed) ? value : parsed;
+	},
+	z
+		.number("amount must be a number")
+		.int("amount must be an integer")
+		.refine((amount) => amount !== 0, "amount must be not zero")
+		.refine(
+			(amount) => Math.abs(amount) <= EXPENSE_AMOUNT_MAX,
+			`amount must be between -${EXPENSE_AMOUNT_MAX} and ${EXPENSE_AMOUNT_MAX}`,
+		),
+);
+
+/** 購入日。YYYY/MM/DD 表記も受け付け、存在しない日付は弾く。 */
+const dateSchema = z.preprocess(
+	(value) => {
+		if (typeof value !== "string") {
+			return value;
+		}
+		return value.trim().normalize("NFKC").replace(/[/.]/g, "-");
+	},
+	z
+		.string()
+		.regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD")
+		.refine(isValidDate, "date must be an existing calendar date"),
+);
+
+const paymentMethodSchema = z.preprocess(
+	(value) => {
+		if (typeof value !== "string") {
+			return value;
+		}
+
+		const trimmed = value.trim();
+		return PAYMENT_METHOD_ALIASES[trimmed.toLowerCase()] ?? trimmed;
+	},
+	z.enum(PAYMENT_METHODS, `paymentMethod must be one of: ${PAYMENT_METHODS.join(", ")}`),
+);
+
+/**
+ * 支出登録リクエスト。
+ * date と paymentMethod は省略可能で、省略時はサーバ側で補完する
+ * （背面タップ経由のように入力ステップを削りたいケースがあるため）。
+ */
 export const expenseSchema = z.object({
-	name: z.string().trim().min(1, "name is required"),
+	name: z
+		.string("name is required")
+		.trim()
+		.min(1, "name is required")
+		.max(EXPENSE_NAME_MAX_LENGTH, `name must be ${EXPENSE_NAME_MAX_LENGTH} characters or less`),
 
-	amount: z.number().refine((num) => num !== 0, "amount must be not zero"),
+	amount: amountSchema,
 
-	paymentMethod: z.enum(PAYMENT_METHODS),
+	paymentMethod: paymentMethodSchema.optional().default(DEFAULT_PAYMENT_METHOD),
 
-	date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD"),
+	date: dateSchema.optional(),
 
-	category: z.string().optional(),
+	category: z.enum(EXPENSE_CATEGORIES, `category must be one of: ${EXPENSE_CATEGORIES.join(", ")}`).optional(),
+});
+
+export type ExpenseInput = z.infer<typeof expenseSchema>;
+
+const monthSchema = z.string().trim().refine(isValidMonth, "month must be YYYY-MM");
+
+const limitSchema = z.preprocess(
+	(value) => (value === undefined || value === "" ? undefined : Number(value)),
+	z
+		.number("limit must be a number")
+		.int("limit must be an integer")
+		.min(1, "limit must be 1 or more")
+		.max(MAX_LIST_LIMIT, `limit must be ${MAX_LIST_LIMIT} or less`)
+		.optional(),
+);
+
+/** GET /expenses のクエリ。 */
+export const listExpensesQuerySchema = z.object({
+	month: monthSchema.optional(),
+	limit: limitSchema,
+	cursor: z.string().trim().min(1).optional(),
+});
+
+/** GET /expenses/summary のクエリ。 */
+export const summaryQuerySchema = z.object({
+	month: monthSchema.optional(),
 });

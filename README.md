@@ -1,21 +1,233 @@
-```txt
+# notion-kakeibo-api
+
+iPhone ショートカットから支出を Notion に記録するための API（Cloudflare Workers + Hono）。
+設計の背景は [docs/家計簿アプリNotion統合_システム設計書.md](docs/家計簿アプリNotion統合_システム設計書.md) を参照。
+
+## セットアップ
+
+```bash
 npm install
+```
+
+秘匿値をローカル用に用意する。
+
+```bash
+cp .dev.vars.example .dev.vars
+```
+
+| 変数 | 置き場所 | 用途 |
+| --- | --- | --- |
+| `NOTION_API_KEY` | secret | Notion インテグレーショントークン |
+| `API_KEY` | secret | このAPIを呼び出すための認証キー |
+| `NOTION_DATABASE_ID` | `wrangler.jsonc` の vars | 支出を書き込む NotionDB のID |
+| `NOTION_DATASOURCE_ID` | `wrangler.jsonc` の vars | 支出のデータソースID |
+| `NOTION_SUMMARY_DATA_SOURCE_ID` | `wrangler.jsonc` の vars | 月次サマリのデータソースID |
+
+本番の secret は wrangler で登録する。
+
+```bash
+npx wrangler secret put API_KEY
+```
+
+## 開発
+
+```bash
 npm run dev
 ```
 
-```txt
-npm run deploy
+```bash
+npm run typecheck
 ```
 
-[For generating/synchronizing types based on your Worker configuration run](https://developers.cloudflare.com/workers/wrangler/commands/#types):
-
-```txt
-npm run cf-typegen
+```bash
+npm run check
 ```
 
-Pass the `CloudflareBindings` as generics when instantiating `Hono`:
+`main` への push で [GitHub Actions](.github/workflows/deploy.yaml) が型チェック・フォーマットチェックを通してからデプロイする。
 
-```ts
-// src/index.ts
-const app = new Hono<{ Bindings: CloudflareBindings }>()
+## 認証
+
+`/` と `/health` 以外のエンドポイントは API キーが必要。次のどちらかで渡す。
+
+- `X-API-Key: <API_KEY>`
+- `Authorization: Bearer <API_KEY>`
+
+キーが一致しない場合は `401`、サーバ側に `API_KEY` が設定されていない場合は `500` を返す（設定漏れのまま公開されるのを防ぐため）。
+
+## エンドポイント
+
+### `GET /health`
+
+疎通確認。認証不要。
+
+```json
+{ "status": "ok" }
 ```
+
+### `GET /categories`
+
+登録できるカテゴリと支払い方法の一覧。ショートカットの選択肢を組み立てるのに使う。
+
+```json
+{
+  "success": true,
+  "categories": ["日用・食費", "住居費", "生活費", "遊び費", "仕事勉強費", "旅行費", "特別費"],
+  "uncategorized": "未分類",
+  "paymentMethods": ["カード", "現金"]
+}
+```
+
+### `POST /expenses`
+
+支出を1件登録する。購入日の月の月次サマリページがあれば、リレーションを張る。
+
+| 項目 | 型 | 必須 | 説明 |
+| --- | --- | --- | --- |
+| `name` | string | ✅ | 支出名。1〜200文字 |
+| `amount` | number \| string | ✅ | 金額。0以外の整数（返金記録のため負の値も可）。`"¥1,200"` `"１２００円"` のような文字列も受け付ける |
+| `paymentMethod` | string |  | `カード` / `現金`。`card` `cash` `クレカ` 等の別名も可。省略時は `カード` |
+| `date` | string |  | 購入日。`YYYY-MM-DD`（`YYYY/MM/DD` も可）。省略時は JST の今日 |
+| `category` | string |  | カテゴリ。省略時は支出名から自動決定 |
+
+```bash
+curl -X POST https://<worker>/expenses \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"ローソン 昼ごはん","amount":"¥820"}'
+```
+
+```json
+{
+  "success": true,
+  "pageId": "1f8c1d7d-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "url": "https://www.notion.so/...",
+  "category": "日用・食費",
+  "categorySource": "auto",
+  "expense": {
+    "name": "ローソン 昼ごはん",
+    "amount": 820,
+    "paymentMethod": "カード",
+    "date": "2026-08-21",
+    "category": "日用・食費"
+  }
+}
+```
+
+`categorySource` は `request`（リクエスト指定）か `auto`（自動決定）。
+
+### `GET /expenses`
+
+指定月の支出を購入日の新しい順に返す。
+
+| クエリ | 既定値 | 説明 |
+| --- | --- | --- |
+| `month` | JST の今月 | `YYYY-MM` |
+| `limit` | 100 | 1〜100 |
+| `cursor` | - | 前回レスポンスの `nextCursor` |
+
+```json
+{
+  "success": true,
+  "month": "2026-08",
+  "count": 2,
+  "total": 1320,
+  "items": [
+    {
+      "id": "...",
+      "url": "https://www.notion.so/...",
+      "name": "ローソン 昼ごはん",
+      "amount": 820,
+      "paymentMethod": "カード",
+      "date": "2026-08-21",
+      "category": "日用・食費"
+    }
+  ],
+  "hasMore": false,
+  "nextCursor": null
+}
+```
+
+`total` は返した件数ぶんの合計。月全体の合計は `/expenses/summary` を使う。
+
+### `GET /expenses/summary`
+
+指定月（既定は今月）の支出をカテゴリ別・支払い方法別に集計する。
+
+```json
+{
+  "success": true,
+  "month": "2026-08",
+  "total": 84200,
+  "count": 37,
+  "byCategory": [
+    { "key": "日用・食費", "total": 41000, "count": 21, "ratio": 48.7 }
+  ],
+  "byPaymentMethod": [
+    { "key": "カード", "total": 78000, "count": 33, "ratio": 92.6 }
+  ],
+  "truncated": false
+}
+```
+
+`truncated` が `true` のときは走査上限（2000件）に達しており、一部しか集計できていない。
+
+## エラーレスポンス
+
+```json
+{
+  "success": false,
+  "code": "validation_error",
+  "message": "amount must be not zero",
+  "requestId": "9baff8f9-7f5b-4428-93d0-d5c0954d477c",
+  "errors": [{ "field": "amount", "message": "amount must be not zero" }]
+}
+```
+
+| ステータス | `code` | 内容 |
+| --- | --- | --- |
+| 400 | `invalid_json` | ボディが JSON として解釈できない |
+| 400 | `validation_error` | 入力値が不正（`errors` に全件） |
+| 401 | `unauthorized` | API キーが不正 |
+| 404 | `not_found` | 該当するエンドポイントがない |
+| 500 | `server_misconfigured` | サーバ側に `API_KEY` が未設定 |
+| 500 | `internal_error` | 想定外のエラー |
+| 502 | `notion_error` | Notion API との連携に失敗 |
+| 503 | `notion_error` | Notion API のレート制限・タイムアウト（時間をおいて再試行） |
+
+`requestId` はレスポンスヘッダ `X-Request-Id` と同じ値で、ログの突き合わせに使える。
+Notion のエラーメッセージはログにのみ残し、レスポンスには `notionCode` だけを載せている。
+
+## カテゴリ自動決定ロジック
+
+`category` を指定しなかった場合のみ動く。
+
+1. 過去に同じ支出名で登録していれば、そのときのカテゴリを採用する（最頻値）。
+2. 部分一致したキーワードのうち、最も長い＝具体的なものを採用する。
+   同じ長さなら一致数 → 静的キーワード優先 → 登録順で決める。
+3. どれにも当たらなければ `未分類`。
+
+支出名は NFKC 正規化・小文字化・空白除去してから突き合わせるため、`ﾛｰｿﾝ` と `ローソン` は同じ扱いになる。
+履歴の支出名は丸ごとに加えて空白・カンマ区切りの語単位でも学習するので、「スタバ ラテ」の履歴から「スタバ」だけでも当たる。
+学習に使うのは直近300件の履歴で、静的キーワードは [src/services/category.ts](src/services/category.ts) にある。
+
+## 構成
+
+```
+src/
+├── index.ts                  ルーティング、共通エラーハンドリング
+├── env.d.ts                  バインディングの型
+├── lib/                      日付・文字列・ログ・レスポンスの補助
+├── middleware/
+│   ├── auth.ts               API キー認証
+│   └── request-context.ts    リクエストID採番とアクセスログ
+├── routes/expenses.ts        /expenses のハンドラ
+├── services/
+│   ├── notion.ts             Notion SDK 経由の読み書き
+│   ├── category.ts           カテゴリ自動決定
+│   └── summary.ts            月次集計
+├── types/expense.ts          ドメインの定数と型
+└── validators/expense.ts     リクエストのバリデーション
+```
+
+Notion 呼び出しは SDK の設定で 10 秒タイムアウト・最大2回リトライにしている。
+SDK は 429 と冪等なメソッドの 5xx のみを `Retry-After` 準拠で再送するため、支出登録の POST が二重に走ることはない。
