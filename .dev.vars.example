@@ -1,0 +1,9 @@
+# ローカル開発用の値。コピーして .dev.vars を作る（.dev.vars は git 管理外）。
+# 本番は wrangler secret put <NAME> で設定する。
+
+# Notion のインテグレーショントークン
+NOTION_API_KEY="ntn_xxxxxxxxxxxxxxxx"
+
+# このAPIを呼び出すための認証キー（任意のランダム文字列）
+# 生成例: openssl rand -base64 32
+API_KEY="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
