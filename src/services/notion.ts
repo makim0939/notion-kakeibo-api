@@ -7,7 +7,7 @@ import { UNCATEGORIZED } from "../types/expense";
 import type { SummaryValues } from "../types/summary";
 import { ACHIEVED_MARK, SUMMARY_PROPERTY } from "../types/summary";
 import type { ExistingBlock } from "./summary-page";
-import { buildSectionCallout, MANAGED_SECTION_PREFIX, signatureOfExisting, summarySignature } from "./summary-page";
+import { MANAGED_FOOTER_PREFIX, MANAGED_HEADING, signatureOfExisting, summarySignature } from "./summary-page";
 
 /**
  * Notion 呼び出しのタイムアウト。SDK の既定は60秒だが、
@@ -31,6 +31,9 @@ const NOTION_PAGE_SIZE = 100;
 
 /** 1クエリで走査するページ数の上限。無限ループと過大なレイテンシを防ぐ。 */
 const MAX_PAGES_PER_QUERY = 20;
+
+/** ブロックの挿入位置。SDK の ContentPositionSchema は公開されていないので、必要な形だけ持つ。 */
+type ContentPosition = { type: "start" } | { type: "end" } | { type: "after_block"; after_block: { id: string } };
 
 type PageProperty = PageObjectResponse["properties"][string];
 
@@ -77,8 +80,8 @@ export function createNotionService(config: NotionServiceConfig) {
 		fetchExpenseCategoryRecords: (limit: number) => fetchExpenseCategoryRecords(notion, dataSourceId, limit),
 		fetchSummaryIdByDate: (date: Date) => fetchSummaryIdByDate(notion, summaryDataSourceId, date),
 		fetchSummaryValues: (pageId: string) => fetchSummaryValues(notion, pageId, summaryDataSourceId),
-		replaceSummarySection: (pageId: string, blocks: BlockObjectRequest[], heading: string) =>
-			replaceSummarySection(notion, pageId, blocks, heading),
+		replaceSummarySection: (pageId: string, blocks: BlockObjectRequest[]) =>
+			replaceSummarySection(notion, pageId, blocks),
 		queryExpensesInMonth: (month: string) => queryExpensesInMonth(notion, dataSourceId, month),
 		linkExpensesToSummary: (month: string, summaryPageId: string) =>
 			linkExpensesToSummary(notion, dataSourceId, month, summaryPageId),
@@ -307,40 +310,96 @@ export async function replaceSummarySection(
 	notion: Client,
 	pageId: string,
 	blocks: BlockObjectRequest[],
-	heading: string,
-): Promise<{ status: SummarySectionStatus; sectionId: string }> {
-	const existing = await findManagedSection(notion, pageId);
+): Promise<{ status: SummarySectionStatus }> {
+	const children = await listPageBlocks(notion, pageId);
+	const region = findManagedRegion(children);
 
-	if (existing) {
-		const current = await listChildren(notion, existing);
+	if (!region) {
+		// ページ先頭に置く。リンクドDBビューより上に来るので、
+		// 開いてすぐ数字が目に入る。
+		await appendInChunks(notion, pageId, blocks, { type: "start" });
+		return { status: "created" };
+	}
 
-		if (signatureOfExisting(current) === summarySignature(blocks)) {
-			return { status: "unchanged", sectionId: existing };
+	const existing = children.slice(region.start, region.end + 1);
+
+	// 末尾のフッタは最終更新時刻なので毎回変わる。比較からは外す。
+	if (signatureOfExisting(existing.slice(0, -1)) === summarySignature(blocks.slice(0, -1))) {
+		return { status: "unchanged" };
+	}
+
+	for (const block of existing) {
+		await notion.blocks.delete({ block_id: block.id });
+	}
+	await appendInChunks(notion, pageId, blocks, positionOf(children, region.start));
+
+	return { status: "updated" };
+}
+
+/**
+ * 自動生成セクションの範囲を探す。
+ * 固定文言の見出しで始まり、「最終更新」のフッタで終わる。
+ * この2つで挟むことで、ユーザがページに書き足した内容を巻き込まずに差し替えられる。
+ */
+function findManagedRegion(blocks: ExistingBlock[]): { start: number; end: number } | undefined {
+	const start = blocks.findIndex((block) => block.type === "heading_1" && plainTextOf(block) === MANAGED_HEADING);
+	if (start === -1) {
+		return undefined;
+	}
+
+	for (let index = start + 1; index < blocks.length; index += 1) {
+		const block = blocks[index];
+		if (block.type === "paragraph" && plainTextOf(block).startsWith(MANAGED_FOOTER_PREFIX)) {
+			return { start, end: index };
 		}
+	}
 
-		await notion.blocks.update({
-			block_id: existing,
-			callout: { rich_text: [{ text: { content: heading } }] },
+	// フッタが見つからない場合は見出しだけを差し替え対象にする。
+	// 直前の実行が途中で落ちた場合などに、本文を丸ごと消してしまわないための保険。
+	return { start, end: start };
+}
+
+/** 削除した位置にそのまま書き戻すための挿入位置。 */
+function positionOf(blocks: ExistingBlock[], start: number): ContentPosition {
+	const previous = blocks[start - 1];
+	return previous ? { type: "after_block", after_block: { id: previous.id } } : { type: "start" };
+}
+
+function plainTextOf(block: ExistingBlock): string {
+	const body = block[block.type] as { rich_text?: { plain_text: string }[] } | undefined;
+	return body?.rich_text?.map((part) => part.plain_text).join("") ?? "";
+}
+
+/**
+ * ページ直下のブロックを読む。
+ * 表は行が子ブロックになるので中身まで取る
+ * （中まで見ないと「表の数値が変わったのに変化なし」と誤判定する）。
+ * リンクドDBビューは子を辿れないので触らない。
+ */
+async function listPageBlocks(notion: Client, pageId: string): Promise<ExistingBlock[]> {
+	const blocks: ExistingBlock[] = [];
+	let cursor: string | undefined;
+
+	do {
+		const response = await notion.blocks.children.list({
+			block_id: pageId,
+			start_cursor: cursor,
+			page_size: NOTION_PAGE_SIZE,
 		});
-		for (const block of current) {
-			await notion.blocks.delete({ block_id: block.id });
+		for (const block of response.results) {
+			if (!("type" in block)) {
+				continue;
+			}
+			const entry = block as unknown as ExistingBlock;
+			if (block.type === "table" && block.has_children) {
+				entry.children = await listChildren(notion, block.id);
+			}
+			blocks.push(entry);
 		}
-		await appendInChunks(notion, existing, blocks);
-		return { status: "updated", sectionId: existing };
-	}
+		cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
+	} while (cursor);
 
-	const appended = await notion.blocks.children.append({
-		block_id: pageId,
-		children: [buildSectionCallout(heading)],
-	});
-
-	const sectionId = appended.results[0]?.id;
-	if (!sectionId) {
-		throw new SummaryPageError("summary_section_failed", "サマリセクションを作成できませんでした。");
-	}
-
-	await appendInChunks(notion, sectionId, blocks);
-	return { status: "created", sectionId };
+	return blocks;
 }
 
 /**
@@ -374,40 +433,27 @@ async function listChildren(notion: Client, blockId: string, depth = 0): Promise
 	return blocks;
 }
 
-/** ページ直下から、自動生成セクションの目印コールアウトを探す。 */
-async function findManagedSection(notion: Client, pageId: string): Promise<string | undefined> {
-	let cursor: string | undefined;
-
-	do {
-		const response = await notion.blocks.children.list({
-			block_id: pageId,
-			start_cursor: cursor,
-			page_size: NOTION_PAGE_SIZE,
-		});
-
-		for (const block of response.results) {
-			if (!("type" in block) || block.type !== "callout") {
-				continue;
-			}
-			const text = block.callout.rich_text.map((part) => part.plain_text).join("");
-			if (text.startsWith(MANAGED_SECTION_PREFIX)) {
-				return block.id;
-			}
-		}
-
-		cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
-	} while (cursor);
-
-	return undefined;
-}
-
 /** append は1リクエスト100ブロックまでなので分割して送る。 */
-async function appendInChunks(notion: Client, blockId: string, blocks: BlockObjectRequest[]): Promise<void> {
+async function appendInChunks(
+	notion: Client,
+	blockId: string,
+	blocks: BlockObjectRequest[],
+	position: ContentPosition,
+): Promise<void> {
+	let at = position;
+
 	for (let index = 0; index < blocks.length; index += NOTION_PAGE_SIZE) {
-		await notion.blocks.children.append({
+		const response = await notion.blocks.children.append({
 			block_id: blockId,
 			children: blocks.slice(index, index + NOTION_PAGE_SIZE),
+			position: at,
 		});
+
+		// 2回目以降は、直前に入れた最後のブロックの後ろに続ける。
+		const last = response.results.at(-1);
+		if (last) {
+			at = { type: "after_block", after_block: { id: last.id } };
+		}
 	}
 }
 

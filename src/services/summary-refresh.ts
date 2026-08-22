@@ -5,7 +5,7 @@ import type { ExpenseBreakdown } from "./expense-breakdown";
 import { breakdownExpenses } from "./expense-breakdown";
 import type { SummarySectionStatus } from "./notion";
 import { createNotionService } from "./notion";
-import { buildSectionHeading, renderSummaryBlocks } from "./summary-page";
+import { renderSummaryBlocks } from "./summary-page";
 
 export type SummaryRefreshResult = {
 	pageId: string;
@@ -42,8 +42,7 @@ export async function refreshSummaryPage(notionService: NotionService, pageId: s
 	const updatedAt = nowInJst();
 	const { status } = await notionService.replaceSummarySection(
 		pageId,
-		renderSummaryBlocks(values, breakdown),
-		buildSectionHeading(updatedAt),
+		renderSummaryBlocks(values, breakdown, updatedAt),
 	);
 
 	return { pageId, title: values.title, month, status, updatedAt };

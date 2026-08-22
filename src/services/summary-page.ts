@@ -3,43 +3,99 @@ import type { SummaryValues } from "../types/summary";
 import type { ExpenseBreakdown } from "./expense-breakdown";
 
 /**
- * 自動生成セクションの目印。
- * この見出しで始まるコールアウトを1つ作り、その子ブロックとして本文を生成する。
- * 子ブロックごと差し替えれば何度更新しても重複しないので、
- * 「プレースホルダを置換すると次回は置換対象が無い」という問題が起きない。
+ * 自動生成セクションの開始位置。この見出しから下、フッタまでが毎回作り直される。
+ * 見出し自体は月によらず固定文言にして、目印として探せるようにしている。
  */
-export const MANAGED_SECTION_PREFIX = "月次サマリ（自動生成）";
+export const MANAGED_HEADING = "📊 月次サマリ";
 
-/** コールアウト見出しの文言。最終更新時刻を添える。 */
-export function buildSectionHeading(updatedAt: string): string {
-	return `${MANAGED_SECTION_PREFIX} / 最終更新 ${updatedAt}`;
+/**
+ * 自動生成セクションの終端。最終更新時刻を添える。
+ * 開始と終端で挟むことで、ユーザが下に書き足した内容を巻き込まずに差し替えられる。
+ */
+export const MANAGED_FOOTER_PREFIX = "最終更新 ";
+
+export function buildFooterText(updatedAt: string): string {
+	return `${MANAGED_FOOTER_PREFIX}${updatedAt}`;
 }
 
 /**
  * サマリ本文のブロックを組み立てる。
  * Notion に触らない純粋な関数なので、そのままテストできる。
+ *
+ * 見出しと短い表だけで構成し、1画面で読み切れる分量に収めている。
  */
 export function renderSummaryBlocks(
 	values: SummaryValues,
 	breakdown: ExpenseBreakdown | null = null,
+	updatedAt = "",
 ): BlockObjectRequest[] {
 	return [
-		heading("目標達成状況"),
+		heading1(MANAGED_HEADING),
 		...goalBlocks(values),
-		heading("資産推移"),
-		paragraph(transition(values.previousTotalAssets, currentTotalAssets(values))),
-		heading3("貯金口座"),
-		paragraph(transition(values.previousSavings, values.savings)),
-		heading3("積立投信"),
-		paragraph(transition(values.previousInvestment, values.investment)),
-		heading("収支"),
-		paragraph(`総収入 ${yen(values.income)} ／ 総支出 ${yen(values.expense)}`),
-		paragraph(`収支の差額 ${signedYen(difference(values.income, values.expense))}`),
-		...(values.discretionaryExpense === null
-			? []
-			: [paragraph(`うち住居・食費以外の支出 ${yen(values.discretionaryExpense)}`)]),
+		...balanceBlocks(values),
+		...assetBlocks(values),
 		...categoryBlocks(breakdown),
+		divider(),
+		paragraph(buildFooterText(updatedAt)),
 	];
+}
+
+/** 今月の目標と、その達成状況。 */
+function goalBlocks(values: SummaryValues): BlockObjectRequest[] {
+	const todos: BlockObjectRequest[] = [];
+
+	if (values.expenseGoal !== null) {
+		todos.push(todo(`生活費を除き出費を${groupDigits(values.expenseGoal)}円で抑える`, values.expenseGoalAchieved));
+	}
+	if (values.savingsGoal !== null) {
+		todos.push(todo(`${groupDigits(values.savingsGoal)}円貯金する`, values.savingsGoalAchieved));
+	}
+	if (values.investmentGoal !== null) {
+		// 投資には達成判定の数式が無いので、前月差から自分で判定する。
+		const increase = difference(values.investment, values.previousInvestment);
+		todos.push(
+			todo(
+				`${groupDigits(values.investmentGoal)}円投資信託に積み立てる`,
+				increase !== null && increase >= values.investmentGoal,
+			),
+		);
+	}
+
+	return [heading("目標"), ...(todos.length === 0 ? [paragraph("目標が未設定です。")] : todos)];
+}
+
+/** 収入と支出。差額まで1つの表で見えるようにする。 */
+function balanceBlocks(values: SummaryValues): BlockObjectRequest[] {
+	const rows = [
+		tableRow(["総収入", yen(values.income)]),
+		tableRow(["総支出", yen(values.expense)]),
+		tableRow(["差額", signedYen(difference(values.income, values.expense))]),
+	];
+
+	if (values.discretionaryExpense !== null) {
+		rows.push(tableRow(["うち住居・食費以外", yen(values.discretionaryExpense)]));
+	}
+
+	return [heading("収支"), table(["項目", "金額"], rows)];
+}
+
+/** 資産の増減。前月と並べて置くことで、増えたのか減ったのかを一目で分かるようにする。 */
+function assetBlocks(values: SummaryValues): BlockObjectRequest[] {
+	return [
+		heading("資産"),
+		table(
+			["項目", "前月", "今月", "増減"],
+			[
+				assetRow("貯金口座", values.previousSavings, values.savings),
+				assetRow("積立投信", values.previousInvestment, values.investment),
+				assetRow("合計", values.previousTotalAssets, currentTotalAssets(values)),
+			],
+		),
+	];
+}
+
+function assetRow(label: string, previous: number | null, current: number | null): BlockObjectRequest {
+	return tableRow([label, yen(previous), yen(current), signedYen(difference(current, previous))]);
 }
 
 /** カテゴリ別の支出額。何にいくら使ったかを一覧で見るための表。 */
@@ -75,40 +131,6 @@ function currentTotalAssets(values: SummaryValues): number | null {
 	return values.totalAssets;
 }
 
-function goalBlocks(values: SummaryValues): BlockObjectRequest[] {
-	const blocks: BlockObjectRequest[] = [];
-
-	if (values.expenseGoal !== null) {
-		blocks.push(todo(`生活費を除き出費を${groupDigits(values.expenseGoal)}円で抑える`, values.expenseGoalAchieved));
-	}
-	if (values.savingsGoal !== null) {
-		blocks.push(todo(`${groupDigits(values.savingsGoal)}円貯金する`, values.savingsGoalAchieved));
-	}
-	if (values.investmentGoal !== null) {
-		// 投資には達成判定の数式が無いので、前月差から自分で判定する。
-		const increase = difference(values.investment, values.previousInvestment);
-		blocks.push(
-			todo(
-				`${groupDigits(values.investmentGoal)}円投資信託に積み立てる`,
-				increase !== null && increase >= values.investmentGoal,
-			),
-		);
-	}
-
-	if (blocks.length === 0) {
-		blocks.push(paragraph("目標が未設定です。"));
-	}
-
-	return blocks;
-}
-
-/** 「前月 → 今月（増減）」の1行。 */
-function transition(previous: number | null, current: number | null): string {
-	const diff = difference(current, previous);
-	const base = `${yen(previous)} → ${yen(current)}`;
-	return diff === null ? base : `${base}（${signedYen(diff)}）`;
-}
-
 function difference(a: number | null, b: number | null): number | null {
 	if (a === null || b === null) {
 		return null;
@@ -136,12 +158,16 @@ function groupDigits(value: number): string {
 	return negative ? `-${grouped}` : grouped;
 }
 
-function heading(text: string): BlockObjectRequest {
-	return { heading_2: { rich_text: [{ text: { content: text } }] } };
+function heading1(text: string): BlockObjectRequest {
+	return { heading_1: { rich_text: [{ text: { content: text } }] } };
 }
 
-function heading3(text: string): BlockObjectRequest {
-	return { heading_3: { rich_text: [{ text: { content: text } }] } };
+function divider(): BlockObjectRequest {
+	return { divider: {} };
+}
+
+function heading(text: string): BlockObjectRequest {
+	return { heading_2: { rich_text: [{ text: { content: text } }] } };
 }
 
 function paragraph(text: string): BlockObjectRequest {
@@ -164,17 +190,6 @@ function table(header: string[], rows: BlockObjectRequest[]): BlockObjectRequest
 			children: [tableRow(header), ...rows],
 		},
 	} as BlockObjectRequest;
-}
-
-/** コールアウト本体。子ブロックは別途 append する。 */
-export function buildSectionCallout(heading: string): BlockObjectRequest {
-	return {
-		callout: {
-			rich_text: [{ text: { content: heading } }],
-			icon: { emoji: "🔄" },
-			color: "gray_background",
-		},
-	};
 }
 
 /** Notion から読んだ既存ブロック。表の行を比較するため子も持つ。 */
