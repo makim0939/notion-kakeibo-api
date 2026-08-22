@@ -7,7 +7,16 @@ import { UNCATEGORIZED } from "../types/expense";
 import type { SummaryValues } from "../types/summary";
 import { ACHIEVED_MARK, SUMMARY_PROPERTY } from "../types/summary";
 import type { ExistingBlock } from "./summary-page";
-import { MANAGED_MARKER_PREFIX, normalizeNotionText, signatureOfExisting, summarySignature } from "./summary-page";
+import {
+	blockBodyOf,
+	blockTypeOf,
+	MANAGED_MARKER_PREFIX,
+	normalizeNotionText,
+	selfSignatureOfExisting,
+	selfSignatureOfRequest,
+	signatureOfExisting,
+	summarySignature,
+} from "./summary-page";
 
 /**
  * Notion 呼び出しのタイムアウト。SDK の既定は60秒だが、
@@ -350,8 +359,8 @@ async function rewriteRegion(
 	const nextIndex = blocks.findIndex((block) => "table" in block);
 	const nextTable = nextIndex === -1 ? undefined : blocks[nextIndex];
 
-	// 表が無い、または列数が変わった場合は作り直すしかない。
-	if (!currentTable || !nextTable || !sameTableWidth(currentTable, nextTable)) {
+	// 表が片側にしか無い、または列数が変わった場合は作り直すしかない。
+	if ((currentTable || nextTable) && (!currentTable || !nextTable || !sameTableWidth(currentTable, nextTable))) {
 		for (const block of existing) {
 			await notion.blocks.delete({ block_id: block.id });
 		}
@@ -359,18 +368,80 @@ async function rewriteRegion(
 		return;
 	}
 
-	for (const block of existing) {
-		if (block.id !== currentTable.id) {
-			await notion.blocks.delete({ block_id: block.id });
-		}
+	// 両側とも表が無い月（支出がまだ1件も無い）。守るものが無いので範囲全体を突き合わせる。
+	if (!currentTable || !nextTable) {
+		await syncBlocks(notion, pageId, existing, blocks, positionOf(children, region.start));
+		return;
 	}
 
-	await appendInChunks(notion, pageId, blocks.slice(0, nextIndex), positionOf(children, region.start));
+	const currentIndex = existing.indexOf(currentTable);
+
+	await syncBlocks(
+		notion,
+		pageId,
+		existing.slice(0, currentIndex),
+		blocks.slice(0, nextIndex),
+		positionOf(children, region.start),
+	);
 	await updateTableRows(notion, currentTable, nextTable);
-	await appendInChunks(notion, pageId, blocks.slice(nextIndex + 1), {
+	await syncBlocks(notion, pageId, existing.slice(currentIndex + 1), blocks.slice(nextIndex + 1), {
 		type: "after_block",
 		after_block: { id: currentTable.id },
 	});
+}
+
+/**
+ * 既存ブロックを次の内容に合わせる。
+ *
+ * 並びと種類が一致していれば、中身が変わったブロックだけ書き換える。
+ * 毎時の定期実行で実際に変わるのは数ブロックなので、消して作り直すのに比べて
+ * Notion への書き込み回数が桁で減る。Workers の無料プランは1実行あたり
+ * サブリクエスト50回までで、ここが上限に当たっていた。
+ *
+ * 並びが変わった場合だけ、従来どおり消して作り直す。
+ */
+async function syncBlocks(
+	notion: Client,
+	parentId: string,
+	current: ExistingBlock[],
+	next: BlockObjectRequest[],
+	position: ContentPosition,
+): Promise<void> {
+	if (!alignedByType(current, next)) {
+		for (const block of current) {
+			await notion.blocks.delete({ block_id: block.id });
+		}
+		await appendInChunks(notion, parentId, next, position);
+		return;
+	}
+
+	for (const [index, block] of current.entries()) {
+		await syncBlock(notion, block, next[index]);
+	}
+}
+
+/** 並びと種類が1対1で対応しているか。一致していれば中身の差し替えだけで済む。 */
+function alignedByType(current: ExistingBlock[], next: BlockObjectRequest[]): boolean {
+	return current.length === next.length && current.every((block, index) => block.type === blockTypeOf(next[index]));
+}
+
+/**
+ * ブロック1つを次の内容に合わせる。自分の中身と子を、それぞれ変わっていれば書き換える。
+ * blocks.update は子を受け付けないので、子は syncBlocks で別に合わせる。
+ */
+async function syncBlock(notion: Client, current: ExistingBlock, next: BlockObjectRequest): Promise<void> {
+	const { children, ...body } = blockBodyOf(next);
+
+	if (selfSignatureOfExisting(current) !== selfSignatureOfRequest(next)) {
+		await notion.blocks.update({
+			block_id: current.id,
+			[blockTypeOf(next)]: body,
+		} as Parameters<typeof notion.blocks.update>[0]);
+	}
+
+	if (children) {
+		await syncBlocks(notion, current.id, current.children ?? [], children, { type: "end" });
+	}
 }
 
 function sameTableWidth(current: ExistingBlock, next: BlockObjectRequest): boolean {
@@ -379,13 +450,17 @@ function sameTableWidth(current: ExistingBlock, next: BlockObjectRequest): boole
 	return currentWidth !== undefined && currentWidth === nextWidth;
 }
 
-/** 表の行を上から順に書き換える。過不足は行の追加・削除で合わせる。 */
+/** 表の行を上から順に書き換える。中身が同じ行は触らない。過不足は行の追加・削除で合わせる。 */
 async function updateTableRows(notion: Client, current: ExistingBlock, next: BlockObjectRequest): Promise<void> {
 	const currentRows = current.children ?? [];
 	const nextRows = (next as { table: { children: BlockObjectRequest[] } }).table.children;
 	const shared = Math.min(currentRows.length, nextRows.length);
 
 	for (let index = 0; index < shared; index += 1) {
+		if (selfSignatureOfExisting(currentRows[index]) === selfSignatureOfRequest(nextRows[index])) {
+			continue;
+		}
+
 		const row = nextRows[index] as { table_row: unknown };
 		await notion.blocks.update({
 			block_id: currentRows[index].id,
@@ -451,6 +526,10 @@ function plainTextOf(block: ExistingBlock): string {
  * ページのブロックを読む。
  * 表の行は1段、段組みは「列 → 中身」で2段ぶら下がるので、そこまで潜って読む
  * （中まで見ないと「数値が変わったのに変化なし」と誤判定する）。
+ *
+ * syncBlocks はここで読んだ子を「既存の子の全部」とみなすので、
+ * 生成するブロックをこれより深くする場合はこの深さも一緒に増やすこと。
+ * 深さが足りないと、既存の子を消さずに追加してしまい中身が二重になる。
  */
 const MANAGED_BLOCK_DEPTH = 2;
 
@@ -723,9 +802,6 @@ export async function linkExpensesToSummary(
 	return { linked, failed, truncated: pages.length >= MAX_RELATION_LINKS_PER_RUN };
 }
 
-/** 走査するビューの上限。月ごとに1つ増えていくため、際限なく辿らないよう区切る。 */
-const MAX_VIEWS_TO_SCAN = 200;
-
 export type ExpenseViewStatus = "updated" | "unchanged" | "not_found";
 
 /**
@@ -743,7 +819,7 @@ export async function updateExpenseViewForMonth(
 	month: string,
 ): Promise<ExpenseViewStatus> {
 	const wrapperIds = await findLinkedDatabaseIds(notion, summaryPageId);
-	if (wrapperIds.size === 0) {
+	if (wrapperIds.length === 0) {
 		return "not_found";
 	}
 
@@ -778,10 +854,11 @@ export async function updateExpenseViewForMonth(
 
 /**
  * ページ直下のリンクドDBブロックの id を集める。
- * リンクドビューは child_database ブロックとして現れ、その id がビューの親DBの id になる。
+ * リンクドビューは child_database ブロックとして現れ、その id がそのまま
+ * views.list の database_id になる（支出DB本体の id とは別物）。
  */
-async function findLinkedDatabaseIds(notion: Client, pageId: string): Promise<Set<string>> {
-	const ids = new Set<string>();
+async function findLinkedDatabaseIds(notion: Client, pageId: string): Promise<string[]> {
+	const ids: string[] = [];
 	let cursor: string | undefined;
 
 	do {
@@ -792,7 +869,7 @@ async function findLinkedDatabaseIds(notion: Client, pageId: string): Promise<Se
 		});
 		for (const block of response.results) {
 			if ("type" in block && block.type === "child_database") {
-				ids.add(normalizeId(block.id));
+				ids.push(block.id);
 			}
 		}
 		cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
@@ -801,42 +878,65 @@ async function findLinkedDatabaseIds(notion: Client, pageId: string): Promise<Se
 	return ids;
 }
 
-/** 支出データソースのビューのうち、指定した親DBに属するものを集める。 */
+/**
+ * 指定したリンクドDBブロックが持つ、支出データソースのビューを集める。
+ *
+ * data_source_id で引くと、そのデータソースを表示しているビューが
+ * ワークスペース中から全部返る（サマリページが増えるほど増える）。
+ * database_id で引けばそのブロックのビューだけで済むので、
+ * 一覧に対して1件ずつ親を照合する必要がなくなる。
+ *
+ * 一覧は id しか返さないため、フィルタを見るには結局1件ずつ引く。
+ * ただし対象はそのページに置かれた表と円グラフだけなので数は増えない。
+ */
 async function findViewsInDatabases(
 	notion: Client,
 	dataSourceId: string,
-	databaseIds: Set<string>,
+	databaseIds: string[],
 ): Promise<{ id: string; filter: unknown }[]> {
 	const found: { id: string; filter: unknown }[] = [];
-	let cursor: string | undefined;
-	let scanned = 0;
 
-	do {
-		const response = await notion.views.list({
-			data_source_id: dataSourceId,
-			start_cursor: cursor,
-			page_size: NOTION_PAGE_SIZE,
-		});
+	for (const databaseId of databaseIds) {
+		let cursor: string | undefined;
 
-		for (const reference of response.results) {
-			if (scanned >= MAX_VIEWS_TO_SCAN) {
-				return found;
-			}
-			scanned += 1;
+		do {
+			const response = await notion.views.list({
+				database_id: databaseId,
+				start_cursor: cursor,
+				page_size: NOTION_PAGE_SIZE,
+			});
 
-			const view = await notion.views.retrieve({ view_id: reference.id });
-			const parent = "parent" in view ? view.parent : undefined;
-			const parentId = parent && "database_id" in parent ? normalizeId(parent.database_id) : undefined;
+			for (const reference of response.results) {
+				const view = await notion.views.retrieve({ view_id: reference.id });
 
-			if (parentId && databaseIds.has(parentId)) {
+				// 支出以外のDBをページに貼った場合に、購入日のフィルタを当ててしまわないよう確かめる。
+				// retrieve の結果に含まれるので、これ自体は追加のリクエストにならない。
+				if (!showsDataSource(view, dataSourceId)) {
+					continue;
+				}
+
 				found.push({ id: view.id, filter: "filter" in view ? view.filter : null });
 			}
-		}
 
-		cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
-	} while (cursor);
+			cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
+		} while (cursor);
+	}
 
 	return found;
+}
+
+/**
+ * ビューが指定のデータソースを表示しているか。
+ * data_source_id が返らない場合は判定材料が無いので、対象とみなして先に進む
+ * （ここで弾くと、月のフィルタが当たらないまま静かに放置されるため）。
+ */
+function showsDataSource(view: object, dataSourceId: string): boolean {
+	const id = "data_source_id" in view ? (view as { data_source_id?: unknown }).data_source_id : undefined;
+
+	if (typeof id !== "string") {
+		return true;
+	}
+	return id.replaceAll("-", "") === dataSourceId.replaceAll("-", "");
 }
 
 /**
@@ -868,8 +968,4 @@ function viewCoversMonth(filter: unknown, start: string, endExclusive: string): 
 	walk(filter);
 
 	return bounds.has(start) && bounds.has(endExclusive);
-}
-
-function normalizeId(id: string): string {
-	return id.replaceAll("-", "").toLowerCase();
 }
