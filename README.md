@@ -19,7 +19,7 @@ subgraph client[クライアント:iPhoneショートカット]
   runShortcutNfc[タッチ決済でショートカット起動]
   getAmountByCapture[スクショOCRで金額取得]
   getAmountByTransaction[決済情報から金額取得]
-  enterInfo[支出名入力] 
+  enterInfo[手動：支出名入力] 
 end
 
 subgraph server[サーバ:⭐️Notion Kakeibo API⭐️]
