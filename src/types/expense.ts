@@ -12,12 +12,13 @@ export const DEFAULT_PAYMENT_METHOD: PaymentMethod = "カード";
  */
 export const EXPENSE_CATEGORIES = [
 	"日用・食費",
-	"住居費",
+	"居住費",
 	"生活費",
 	"遊び費",
 	"仕事勉強費",
 	"旅行費",
 	"特別費",
+	"投資",
 ] as const;
 
 export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];

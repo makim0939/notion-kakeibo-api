@@ -78,7 +78,7 @@ curl -X POST https://<worker>/expenses \
 ```json
 {
   "success": true,
-  "categories": ["日用・食費", "住居費", "生活費", "遊び費", "仕事勉強費", "旅行費", "特別費"],
+  "categories": ["日用・食費", "居住費", "生活費", "遊び費", "仕事勉強費", "旅行費", "特別費", "投資"],
   "uncategorized": "未分類",
   "paymentMethods": ["カード", "現金"]
 }
