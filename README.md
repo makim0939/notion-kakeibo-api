@@ -14,18 +14,18 @@ iPhoneショートカットから手間なくに支出を記録。Notionで家�
 ```mermaid
 graph TD;
 
-subgraph client[クライアント：iPhoneショートカット]
+subgraph client[クライアント:iPhoneショートカット]
   runShortcut[iPhoneショートカット起動\n（背面タップ）] 
   getAmount[スクショOCRで金額取得]
   enterInfo["支出名入力"] 
 end
 
-subgraph server[サーバ：Cloudflare Workers]
+subgraph server[サーバ:⭐️Notion Kakeibo API⭐️]
   newExpense[支出登録\nバリデーション、カテゴリ自動決定]
   updateSummary[月次サマリ更新]
 end
 
-subgraph notion[クライアント：Notion]
+subgraph notion[クライアント:Notion]
   ExpenseDB[支出DB]
   KakeiboDB[家計簿DB]
 end
