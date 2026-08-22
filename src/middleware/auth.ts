@@ -10,37 +10,28 @@ import { buildErrorBody } from "../lib/response";
  * API_KEY が未設定のときは通さずに 500 を返す。設定漏れのまま
  * 「URL を知っていれば誰でも書き込める」状態になるのを避けるため。
  */
-export const apiKeyAuth: MiddlewareHandler<AppEnv> = createApiKeyAuth();
+export const apiKeyAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
+	const requestId = c.get("requestId");
+	const expected = c.env.API_KEY;
 
-/**
- * `allowQueryParam` を立てると `?key=` でも受け付ける。
- * Notion の数式プロパティが出す URL をブラウザで開く経路は
- * リクエストヘッダを付けられないため、そこだけで使う。
- */
-export function createApiKeyAuth(options: { allowQueryParam?: boolean } = {}): MiddlewareHandler<AppEnv> {
-	return async (c, next) => {
-		const requestId = c.get("requestId");
-		const expected = c.env.API_KEY;
+	if (!expected) {
+		log("error", "api_key_not_configured", { requestId });
+		return c.json(buildErrorBody("server_misconfigured", "サーバの設定が不足しています。", requestId), 500);
+	}
 
-		if (!expected) {
-			log("error", "api_key_not_configured", { requestId });
-			return c.json(buildErrorBody("server_misconfigured", "サーバの設定が不足しています。", requestId), 500);
-		}
+	const provided = extractApiKey(c.req.header());
 
-		const provided = extractApiKey(c.req.header()) ?? (options.allowQueryParam ? c.req.query("key") : undefined);
+	if (!provided || !(await isSameSecret(provided, expected))) {
+		log("warn", "unauthorized", {
+			requestId,
+			path: new URL(c.req.url).pathname,
+			hasCredential: Boolean(provided),
+		});
+		return c.json(buildErrorBody("unauthorized", "認証に失敗しました。", requestId), 401);
+	}
 
-		if (!provided || !(await isSameSecret(provided, expected))) {
-			log("warn", "unauthorized", {
-				requestId,
-				path: new URL(c.req.url).pathname,
-				hasCredential: Boolean(provided),
-			});
-			return c.json(buildErrorBody("unauthorized", "認証に失敗しました。", requestId), 401);
-		}
-
-		await next();
-	};
-}
+	await next();
+};
 
 function extractApiKey(headers: Record<string, string>): string | undefined {
 	const apiKeyHeader = headers["x-api-key"];
