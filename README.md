@@ -38,22 +38,6 @@ updateSummary -- 毎時トリガー --> KakeiboDB
 
 ```
 
-## 認証
-
-`/` と `/health` 以外のエンドポイントは API キーが必要。次のどちらかで渡す。
-
-- `X-API-Key: <API_KEY>`
-- `Authorization: Bearer <API_KEY>`
-
-キーが一致しない場合は `401`、サーバ側に `API_KEY` が設定されていない場合は `500` を返す（設定漏れのまま公開されるのを防ぐため）。
-
-```bash
-curl -X POST https://<worker>/expenses \
-  -H "X-API-Key: $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"ローソン 昼ごはん","amount":"¥820"}'
-```
-
 ## エンドポイント
 
 | メソッド | パス | 内容 | 認証 |
