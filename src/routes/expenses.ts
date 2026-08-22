@@ -1,10 +1,13 @@
 import { Hono } from "hono";
-import type { Bindings } from "../env";
+import type { AppEnv } from "../env";
+import { apiKeyAuth } from "../middleware/auth";
 import { buildCategoryKeywordMap, decideCategory } from "../services/category";
 import { createNotionService } from "../services/notion";
 import { expenseSchema } from "../validators/expense";
 
-export const expensesRoute = new Hono<{ Bindings: Bindings }>();
+export const expensesRoute = new Hono<AppEnv>();
+
+expensesRoute.use("*", apiKeyAuth);
 
 expensesRoute.post("/", async (c) => {
 	const body = await c.req.json();

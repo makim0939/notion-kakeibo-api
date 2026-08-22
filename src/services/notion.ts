@@ -2,6 +2,23 @@ import type { PageObjectResponse, QueryDataSourceResponse } from "@notionhq/clie
 import { Client } from "@notionhq/client";
 import type { CategoryHistoryRecord, ExpenseRequest } from "../types/expense";
 
+/**
+ * Notion 呼び出しのタイムアウト。SDK の既定は60秒だが、
+ * ショートカット側を待たせ続けないよう短くしている。
+ */
+const REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * リトライ設定。SDK が 429 と（冪等なメソッドの）5xx を
+ * Retry-After 準拠の指数バックオフで再送してくれる。
+ * 支出登録の POST は冪等でないため 5xx では再送されず、二重登録が起きない。
+ */
+const RETRY_OPTIONS = {
+	maxRetries: 2,
+	initialRetryDelayMs: 300,
+	maxRetryDelayMs: 4_000,
+};
+
 type PageProperty = PageObjectResponse["properties"][string];
 
 type QueryDataSourceResult = QueryDataSourceResponse["results"][number];
@@ -31,7 +48,11 @@ type PropertyOf<T extends Record<string, keyof PropertyShapeMap>> = {
 };
 
 export function createNotionService(config: NotionServiceConfig) {
-	const notion = new Client({ auth: config.apiKey });
+	const notion = new Client({
+		auth: config.apiKey,
+		timeoutMs: REQUEST_TIMEOUT_MS,
+		retry: RETRY_OPTIONS,
+	});
 	const databaseId = config.databaseId;
 	const dataSourceId = config.dataSourceId;
 	const summaryDataSourceId = config.summaryDataSourceId;
