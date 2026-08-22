@@ -71,6 +71,19 @@ curl -X POST https://<worker>/expenses \
 { "status": "ok" }
 ```
 
+### `GET /categories`
+
+登録できるカテゴリと支払い方法の一覧。iPhone ショートカットの選択肢を組み立てるのに使う。
+
+```json
+{
+  "success": true,
+  "categories": ["日用・食費", "住居費", "生活費", "遊び費", "仕事勉強費", "旅行費", "特別費"],
+  "uncategorized": "未分類",
+  "paymentMethods": ["カード", "現金"]
+}
+```
+
 ### `POST /expenses`
 
 支出を1件登録する。購入日の月の月次サマリページがあれば、リレーションを張る。
