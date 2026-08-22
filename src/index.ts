@@ -3,8 +3,10 @@ import { Hono } from "hono";
 import type { AppEnv } from "./env";
 import { describeError, log } from "./lib/log";
 import { buildErrorBody } from "./lib/response";
+import { apiKeyAuth } from "./middleware/auth";
 import { requestContext } from "./middleware/request-context";
 import { expensesRoute } from "./routes/expenses";
+import { EXPENSE_CATEGORIES, PAYMENT_METHODS, UNCATEGORIZED } from "./types/expense";
 
 const app = new Hono<AppEnv>();
 
@@ -13,6 +15,16 @@ app.use("*", requestContext);
 // 疎通確認用。監視から叩けるよう認証は不要にしている。
 app.get("/", (c) => c.text("OK"));
 app.get("/health", (c) => c.json({ status: "ok" }));
+
+// ショートカット側で選択肢を組み立てられるように、受け付ける値を返す。
+app.get("/categories", apiKeyAuth, (c) =>
+	c.json({
+		success: true,
+		categories: EXPENSE_CATEGORIES,
+		uncategorized: UNCATEGORIZED,
+		paymentMethods: PAYMENT_METHODS,
+	}),
+);
 
 app.route("/expenses", expensesRoute);
 
