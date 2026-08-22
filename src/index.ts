@@ -6,6 +6,7 @@ import { buildErrorBody } from "./lib/response";
 import { apiKeyAuth } from "./middleware/auth";
 import { requestContext } from "./middleware/request-context";
 import { expensesRoute } from "./routes/expenses";
+import { summaryRoute } from "./routes/summary";
 import { EXPENSE_CATEGORIES, PAYMENT_METHODS, UNCATEGORIZED } from "./types/expense";
 
 const app = new Hono<AppEnv>();
@@ -27,6 +28,7 @@ app.get("/categories", apiKeyAuth, (c) =>
 );
 
 app.route("/expenses", expensesRoute);
+app.route("/summary", summaryRoute);
 
 app.notFound((c) => c.json(buildErrorBody("not_found", "エンドポイントが存在しません。", c.get("requestId")), 404));
 

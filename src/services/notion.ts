@@ -1,7 +1,10 @@
-import type { PageObjectResponse, QueryDataSourceResponse } from "@notionhq/client";
+import type { BlockObjectRequest, PageObjectResponse, QueryDataSourceResponse } from "@notionhq/client";
 import { Client } from "@notionhq/client";
 import type { CategoryHistoryRecord, ExpenseRequest } from "../types/expense";
 import { UNCATEGORIZED } from "../types/expense";
+import type { SummaryValues } from "../types/summary";
+import { ACHIEVED_MARK, SUMMARY_PROPERTY } from "../types/summary";
+import { buildSectionCallout, MANAGED_SECTION_PREFIX } from "./summary-page";
 
 /**
  * Notion 呼び出しのタイムアウト。SDK の既定は60秒だが、
@@ -70,6 +73,9 @@ export function createNotionService(config: NotionServiceConfig) {
 			createExpensePage(notion, databaseId, expense, summaryPageId),
 		fetchExpenseCategoryRecords: (limit: number) => fetchExpenseCategoryRecords(notion, dataSourceId, limit),
 		fetchSummaryIdByDate: (date: Date) => fetchSummaryIdByDate(notion, summaryDataSourceId, date),
+		fetchSummaryValues: (pageId: string) => fetchSummaryValues(notion, pageId, summaryDataSourceId),
+		replaceSummarySection: (pageId: string, blocks: BlockObjectRequest[], heading: string) =>
+			replaceSummarySection(notion, pageId, blocks, heading),
 	};
 }
 
@@ -204,6 +210,24 @@ async function fetchDataSourcePages(
 	return limit === undefined ? pages : pages.slice(0, limit);
 }
 
+function extractTitle(property: unknown): string | undefined {
+	if (!isRecord(property) || property.type !== "title" || !Array.isArray(property.title)) {
+		return undefined;
+	}
+	const text = property.title
+		.map((part) => (isRecord(part) && typeof part.plain_text === "string" ? part.plain_text : ""))
+		.join("")
+		.trim();
+	return text || undefined;
+}
+
+function extractDateStart(property: unknown): string | null {
+	if (!isRecord(property) || property.type !== "date" || !isRecord(property.date)) {
+		return null;
+	}
+	return typeof property.date.start === "string" ? property.date.start.slice(0, 10) : null;
+}
+
 function isFullPage(page: QueryDataSourceResult): page is PageObjectResponse {
 	return "properties" in page;
 }
@@ -215,4 +239,216 @@ function hasProperties<T extends Record<string, keyof PropertyShapeMap>>(
 	return Object.entries(shape).every(([key, type]) => {
 		return properties[key]?.type === type;
 	});
+}
+
+/**
+ * サマリページの値を読み出す。
+ * 取り違えたページに書き込まないよう、月次サマリのデータソース配下かを確認する。
+ */
+export async function fetchSummaryValues(
+	notion: Client,
+	pageId: string,
+	expectedDataSourceId: string,
+): Promise<SummaryValues> {
+	const page = await notion.pages.retrieve({ page_id: pageId });
+
+	if (!("properties" in page)) {
+		throw new SummaryPageError("summary_page_unavailable", "サマリページを読み取れませんでした。");
+	}
+
+	if (!belongsToDataSource(page.parent, expectedDataSourceId)) {
+		throw new SummaryPageError("not_a_summary_page", "指定されたページは月次サマリのページではありません。");
+	}
+
+	const properties = page.properties;
+	const read = (name: string) => readNumber(properties[name]);
+
+	return {
+		title: extractTitle(properties[SUMMARY_PROPERTY.title]) ?? "",
+		date: extractDateStart(properties[SUMMARY_PROPERTY.date]),
+		totalAssets: read(SUMMARY_PROPERTY.totalAssets),
+		previousTotalAssets: read(SUMMARY_PROPERTY.previousTotalAssets),
+		savings: read(SUMMARY_PROPERTY.savings),
+		previousSavings: read(SUMMARY_PROPERTY.previousSavings),
+		investment: read(SUMMARY_PROPERTY.investment),
+		previousInvestment: read(SUMMARY_PROPERTY.previousInvestment),
+		income: read(SUMMARY_PROPERTY.income),
+		expense: read(SUMMARY_PROPERTY.expense),
+		discretionaryExpense: read(SUMMARY_PROPERTY.discretionaryExpense),
+		savingsGoal: read(SUMMARY_PROPERTY.savingsGoal),
+		expenseGoal: read(SUMMARY_PROPERTY.expenseGoal),
+		investmentGoal: read(SUMMARY_PROPERTY.investmentGoal),
+		savingsGoalAchieved: readAchieved(properties[SUMMARY_PROPERTY.savingsGoalAchieved]),
+		expenseGoalAchieved: readAchieved(properties[SUMMARY_PROPERTY.expenseGoalAchieved]),
+	};
+}
+
+/**
+ * 自動生成セクションを最新の内容に差し替える。
+ * 目印のコールアウトがあればその子ブロックだけを作り直し、無ければページ末尾に新規作成する。
+ * ユーザが書いた既存ブロックには一切触れない。
+ */
+export async function replaceSummarySection(
+	notion: Client,
+	pageId: string,
+	blocks: BlockObjectRequest[],
+	heading: string,
+): Promise<{ created: boolean; sectionId: string }> {
+	const existing = await findManagedSection(notion, pageId);
+
+	if (existing) {
+		await notion.blocks.update({
+			block_id: existing,
+			callout: { rich_text: [{ text: { content: heading } }] },
+		});
+		await deleteChildren(notion, existing);
+		await appendInChunks(notion, existing, blocks);
+		return { created: false, sectionId: existing };
+	}
+
+	const appended = await notion.blocks.children.append({
+		block_id: pageId,
+		children: [buildSectionCallout(heading)],
+	});
+
+	const sectionId = appended.results[0]?.id;
+	if (!sectionId) {
+		throw new SummaryPageError("summary_section_failed", "サマリセクションを作成できませんでした。");
+	}
+
+	await appendInChunks(notion, sectionId, blocks);
+	return { created: true, sectionId };
+}
+
+/** ページ直下から、自動生成セクションの目印コールアウトを探す。 */
+async function findManagedSection(notion: Client, pageId: string): Promise<string | undefined> {
+	let cursor: string | undefined;
+
+	do {
+		const response = await notion.blocks.children.list({
+			block_id: pageId,
+			start_cursor: cursor,
+			page_size: NOTION_PAGE_SIZE,
+		});
+
+		for (const block of response.results) {
+			if (!("type" in block) || block.type !== "callout") {
+				continue;
+			}
+			const text = block.callout.rich_text.map((part) => part.plain_text).join("");
+			if (text.startsWith(MANAGED_SECTION_PREFIX)) {
+				return block.id;
+			}
+		}
+
+		cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
+	} while (cursor);
+
+	return undefined;
+}
+
+async function deleteChildren(notion: Client, blockId: string): Promise<void> {
+	const ids: string[] = [];
+	let cursor: string | undefined;
+
+	do {
+		const response = await notion.blocks.children.list({
+			block_id: blockId,
+			start_cursor: cursor,
+			page_size: NOTION_PAGE_SIZE,
+		});
+		ids.push(...response.results.map((block) => block.id));
+		cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
+	} while (cursor);
+
+	// 並列で消すとレート制限に当たりやすいので順番に消す。
+	for (const id of ids) {
+		await notion.blocks.delete({ block_id: id });
+	}
+}
+
+/** append は1リクエスト100ブロックまでなので分割して送る。 */
+async function appendInChunks(notion: Client, blockId: string, blocks: BlockObjectRequest[]): Promise<void> {
+	for (let index = 0; index < blocks.length; index += NOTION_PAGE_SIZE) {
+		await notion.blocks.children.append({
+			block_id: blockId,
+			children: blocks.slice(index, index + NOTION_PAGE_SIZE),
+		});
+	}
+}
+
+/**
+ * ページが指定のデータソース配下かを判定する。
+ * DB ページの parent は {type:"data_source_id", data_source_id, database_id} で返る。
+ * database_id はデータソースIDとは別物なので、data_source_id だけを見る。
+ */
+function belongsToDataSource(parent: unknown, dataSourceId: string): boolean {
+	if (!isRecord(parent) || typeof parent.data_source_id !== "string") {
+		return false;
+	}
+	return parent.data_source_id.replaceAll("-", "") === dataSourceId.replaceAll("-", "");
+}
+
+function readNumber(property: unknown): number | null {
+	if (!isRecord(property)) {
+		return null;
+	}
+
+	switch (property.type) {
+		case "number":
+			return typeof property.number === "number" ? property.number : null;
+		case "formula":
+			return isRecord(property.formula) && typeof property.formula.number === "number" ? property.formula.number : null;
+		case "rollup":
+			return readRollupNumber(property.rollup);
+		default:
+			return null;
+	}
+}
+
+/**
+ * ロールアップは function によって形が変わる。
+ * sum なら number、show_original なら配列（中身は number か formula）で返ってくる。
+ */
+function readRollupNumber(rollup: unknown): number | null {
+	if (!isRecord(rollup)) {
+		return null;
+	}
+
+	if (typeof rollup.number === "number") {
+		return rollup.number;
+	}
+
+	if (Array.isArray(rollup.array)) {
+		for (const item of rollup.array) {
+			const value = readNumber(item);
+			if (value !== null) {
+				return value;
+			}
+		}
+	}
+
+	return null;
+}
+
+function readAchieved(property: unknown): boolean {
+	if (!isRecord(property) || property.type !== "formula" || !isRecord(property.formula)) {
+		return false;
+	}
+	return property.formula.string === ACHIEVED_MARK;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+/** サマリ更新で想定内の失敗を表す。 */
+export class SummaryPageError extends Error {
+	constructor(
+		readonly code: string,
+		message: string,
+	) {
+		super(message);
+		this.name = "SummaryPageError";
+	}
 }

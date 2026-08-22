@@ -26,3 +26,30 @@ export function isValidDate(value: string): boolean {
 	const parsed = new Date(`${value}T00:00:00Z`);
 	return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
+/** JST における今月を YYYY-MM で返す。 */
+export function currentMonthInJst(now: Date = new Date()): string {
+	return todayInJst(now).slice(0, 7);
+}
+
+/**
+ * YYYY-MM から Notion の日付フィルタに使う範囲を返す。
+ * 終端は「翌月1日より前」とし、月末日を意識せずに範囲指定できるようにしている。
+ */
+export function monthRange(month: string): { start: string; endExclusive: string } {
+	const year = Number(month.slice(0, 4));
+	const monthNumber = Number(month.slice(5, 7));
+
+	const nextYear = monthNumber === 12 ? year + 1 : year;
+	const nextMonth = monthNumber === 12 ? 1 : monthNumber + 1;
+
+	return {
+		start: `${month}-01`,
+		endExclusive: `${String(nextYear).padStart(4, "0")}-${String(nextMonth).padStart(2, "0")}-01`,
+	};
+}
+
+/** JST の現在時刻を「YYYY-MM-DD HH:mm」で返す。ページ上の最終更新表示に使う。 */
+export function nowInJst(now: Date = new Date()): string {
+	const jst = new Date(now.getTime() + JST_OFFSET_MS).toISOString();
+	return `${jst.slice(0, 10)} ${jst.slice(11, 16)}`;
+}
