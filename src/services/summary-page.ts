@@ -55,22 +55,16 @@ function categoryBlocks(breakdown: ExpenseBreakdown | null): BlockObjectRequest[
 		return [heading("カテゴリ別の支出"), paragraph("この月の支出はまだありません。")];
 	}
 
-	const rows = breakdown.rows.map((row) =>
-		tableRow([
-			row.category,
-			`${row.count} 件`,
-			`${groupDigits(row.total)} 円`,
-			`${row.ratio.toFixed(1)} %`,
-			row.delta === null ? "—" : signedYen(row.delta),
-		]),
-	);
+	// 一目で「何にいくら」だけ分かればよいので、列は2つに絞る。
+	// 構成比は円グラフのビューに任せ、表には出さない。
+	const rows = breakdown.rows.map((row) => tableRow([row.category, `${groupDigits(row.total)} 円`]));
 
 	return [
 		heading("カテゴリ別の支出"),
-		table(
-			["カテゴリ", "件数", "金額", "構成比", "前月比"],
-			[...rows, tableRow(["合計", `${breakdown.count} 件`, `${groupDigits(breakdown.total)} 円`, "100.0 %", "—"])],
-		),
+		table(["カテゴリ", "金額"], [...rows, tableRow(["合計", `${groupDigits(breakdown.total)} 円`])]),
+		...(breakdown.investment === null
+			? []
+			: [paragraph(`※ 積立投資 ${groupDigits(breakdown.investment)} 円 は資産の移動なので支出に含めていません。`)]),
 	];
 }
 

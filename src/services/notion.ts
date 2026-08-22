@@ -1,6 +1,7 @@
 import type { BlockObjectRequest, PageObjectResponse, QueryDataSourceResponse } from "@notionhq/client";
 import { Client } from "@notionhq/client";
 import { monthRange } from "../lib/date";
+import { describeError, log } from "../lib/log";
 import type { CategoryHistoryRecord, ExpenseRequest, MonthlyExpense } from "../types/expense";
 import { UNCATEGORIZED } from "../types/expense";
 import type { SummaryValues } from "../types/summary";
@@ -79,6 +80,8 @@ export function createNotionService(config: NotionServiceConfig) {
 		replaceSummarySection: (pageId: string, blocks: BlockObjectRequest[], heading: string) =>
 			replaceSummarySection(notion, pageId, blocks, heading),
 		queryExpensesInMonth: (month: string) => queryExpensesInMonth(notion, dataSourceId, month),
+		linkExpensesToSummary: (month: string, summaryPageId: string) =>
+			linkExpensesToSummary(notion, dataSourceId, month, summaryPageId),
 		querySummaryPageIds: (from: string, toExclusive: string) =>
 			querySummaryPageIds(notion, summaryDataSourceId, from, toExclusive),
 	};
@@ -555,4 +558,62 @@ export async function queryExpensesInMonth(
 	}
 
 	return { items, truncated: pages.length >= MAX_EXPENSES_PER_MONTH };
+}
+
+/**
+ * 1回の実行でリレーションを張り直す上限。
+ * Notion 側の書き込みは1件1リクエストなので、
+ * 想定外の件数を一気に処理して実行時間を食い潰さないよう区切る。
+ */
+const MAX_RELATION_LINKS_PER_RUN = 50;
+
+/**
+ * 指定月の支出のうち「月次サマリ」リレーションが空のものを、その月のサマリページに繋ぐ。
+ *
+ * Notion で直接入力した支出はリレーションを張り忘れやすく、
+ * 張り忘れるとサマリ側の集計プロパティ（総支出など）から丸ごと漏れる。
+ * 購入日から所属する月は一意に決まるので、ここで機械的に補完する。
+ */
+export async function linkExpensesToSummary(
+	notion: Client,
+	dataSourceId: string,
+	month: string,
+	summaryPageId: string,
+): Promise<{ linked: number; failed: number; truncated: boolean }> {
+	const { start, endExclusive } = monthRange(month);
+
+	const pages = await fetchDataSourcePages(
+		notion,
+		{
+			data_source_id: dataSourceId,
+			filter: {
+				and: [
+					{ property: "購入日", date: { on_or_after: start } },
+					{ property: "購入日", date: { before: endExclusive } },
+					{ property: "月次サマリ", relation: { is_empty: true } },
+				],
+			},
+		},
+		MAX_RELATION_LINKS_PER_RUN,
+	);
+
+	let linked = 0;
+	let failed = 0;
+
+	for (const page of pages) {
+		try {
+			await notion.pages.update({
+				page_id: page.id,
+				properties: { 月次サマリ: { relation: [{ id: summaryPageId }] } },
+			});
+			linked += 1;
+		} catch (error) {
+			// 1件失敗しても残りは繋ぐ。次回の実行で再度対象になる。
+			log("warn", "expense_link_failed", { pageId: page.id, month, ...describeError(error) });
+			failed += 1;
+		}
+	}
+
+	// 上限に達した場合はまだ残っている可能性がある。次回の実行で続きを処理する。
+	return { linked, failed, truncated: pages.length >= MAX_RELATION_LINKS_PER_RUN };
 }

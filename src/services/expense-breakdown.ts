@@ -24,9 +24,18 @@ export type ExpenseBreakdown = {
 	count: number;
 	rows: CategoryBreakdown[];
 	groups: CategoryGroup[];
+	/** 積立投資の合計。支出には含めない。実績が無ければ null。 */
+	investment: number | null;
 	/** 取得上限に達して一部しか読めていない場合に true。 */
 	truncated: boolean;
 };
+
+/**
+ * 資産の移動であって消費ではないカテゴリ。
+ * サマリページの「🔴総支出」も同じ考えでこれを除いているので、
+ * こちらの集計も揃えて、同じページに違う総額が並ばないようにする。
+ */
+const NON_EXPENSE_CATEGORY = "投資";
 
 /**
  * 支出をカテゴリ別に集計する。
@@ -37,9 +46,12 @@ export function breakdownExpenses(
 	previous: MonthlyExpense[] = [],
 	truncated = false,
 ): ExpenseBreakdown {
-	const total = sum(current);
-	const currentTotals = totalsByCategory(current);
-	const previousTotals = totalsByCategory(previous);
+	const investmentItems = current.filter((expense) => expense.category === NON_EXPENSE_CATEGORY);
+	const spent = current.filter((expense) => expense.category !== NON_EXPENSE_CATEGORY);
+
+	const total = sum(spent);
+	const currentTotals = totalsByCategory(spent);
+	const previousTotals = totalsByCategory(previous.filter((e) => e.category !== NON_EXPENSE_CATEGORY));
 
 	const rows: CategoryBreakdown[] = Array.from(currentTotals, ([category, value]) => {
 		const previousTotal = previousTotals.get(category)?.total ?? null;
@@ -56,12 +68,19 @@ export function breakdownExpenses(
 	const groups: CategoryGroup[] = rows.map((row) => ({
 		category: row.category,
 		total: row.total,
-		items: current
+		items: spent
 			.filter((expense) => expense.category === row.category)
 			.sort((a, b) => b.amount - a.amount || (a.date ?? "").localeCompare(b.date ?? "")),
 	}));
 
-	return { total, count: current.length, rows, groups, truncated };
+	return {
+		total,
+		count: spent.length,
+		rows,
+		groups,
+		investment: investmentItems.length === 0 ? null : sum(investmentItems),
+		truncated,
+	};
 }
 
 function totalsByCategory(expenses: MonthlyExpense[]): Map<string, { total: number; count: number }> {

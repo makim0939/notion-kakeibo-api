@@ -31,6 +31,12 @@ export function createNotionServiceFromEnv(env: Bindings): NotionService {
 export async function refreshSummaryPage(notionService: NotionService, pageId: string): Promise<SummaryRefreshResult> {
 	const values = await notionService.fetchSummaryValues(pageId);
 	const month = values.date?.slice(0, 7) ?? null;
+
+	// 集計を読む前に張る。ここで補完した分がサマリ側の集計プロパティにも反映される。
+	if (month !== null) {
+		await linkOrphanExpenses(notionService, month, pageId);
+	}
+
 	const breakdown = month === null ? null : await loadBreakdown(notionService, month);
 	const updatedAt = nowInJst();
 	const { status } = await notionService.replaceSummarySection(
@@ -40,6 +46,24 @@ export async function refreshSummaryPage(notionService: NotionService, pageId: s
 	);
 
 	return { pageId, title: values.title, month, status, updatedAt };
+}
+
+/**
+ * リレーションが空の支出を、その月のサマリページに繋ぐ。
+ *
+ * ショートカット経由の登録は自動で繋がるが、Notion で直接入力した分は繋がらない。
+ * 繋がっていない支出はサマリ側の集計プロパティから漏れるので、ここで補完する。
+ * 失敗してもサマリ本文は出せるため、握りつぶして続行する。
+ */
+async function linkOrphanExpenses(notionService: NotionService, month: string, summaryPageId: string): Promise<void> {
+	try {
+		const result = await notionService.linkExpensesToSummary(month, summaryPageId);
+		if (result.linked > 0 || result.failed > 0) {
+			log("info", "expenses_linked", { month, ...result });
+		}
+	} catch (error) {
+		log("warn", "expense_link_unavailable", { month, ...describeError(error) });
+	}
 }
 
 /**
