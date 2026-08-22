@@ -15,9 +15,11 @@ iPhoneショートカットから手間なくに支出を記録。Notionで家�
 graph TD;
 
 subgraph client[クライアント:iPhoneショートカット]
-  runShortcut[iPhoneショートカット起動\n（背面タップ）] 
-  getAmount[スクショOCRで金額取得]
-  enterInfo["支出名入力"] 
+  runShortcutTap[背面タップでショートカット起動] 
+  runShortcutNfc[タッチ決済でショートカット起動]
+  getAmountByCapture[スクショOCRで金額取得]
+  getAmountByTransaction[決済情報から金額取得]
+  enterInfo[支出名入力] 
 end
 
 subgraph server[サーバ:⭐️Notion Kakeibo API⭐️]
@@ -30,8 +32,10 @@ subgraph notion[クライアント:Notion]
   KakeiboDB[家計簿DB]
 end
 
-runShortcut --> getAmount
-getAmount　--> enterInfo
+runShortcutTap --> getAmountByCapture
+runShortcutNfc　--> getAmountByTransaction
+getAmountByCapture--> enterInfo
+getAmountByTransaction --> enterInfo
 enterInfo --> newExpense
 newExpense --> ExpenseDB
 updateSummary -- 毎時トリガー --> KakeiboDB
