@@ -1,6 +1,7 @@
 import type { PageObjectResponse, QueryDataSourceResponse } from "@notionhq/client";
 import { Client } from "@notionhq/client";
 import type { CategoryHistoryRecord, ExpenseRequest } from "../types/expense";
+import { UNCATEGORIZED } from "../types/expense";
 
 /**
  * Notion 呼び出しのタイムアウト。SDK の既定は60秒だが、
@@ -32,6 +33,7 @@ type NotionServiceConfig = {
 
 type NotionCreatePageResponse = {
 	id: string;
+	url: string | null;
 };
 
 type PropertyShapeMap = {
@@ -82,12 +84,12 @@ export async function createExpensePage(
 			金額: { number: expense.amount },
 			支払い方法: { select: { name: expense.paymentMethod } },
 			購入日: { date: { start: expense.date } },
-			カテゴリ: { select: { name: expense.category ?? "未分類" } },
+			カテゴリ: { select: { name: expense.category ?? UNCATEGORIZED } },
 			...(summaryPageId ? { 月次サマリ: { relation: [{ id: summaryPageId }] } } : {}),
 		},
 	});
 
-	return { id: response.id };
+	return { id: response.id, url: "url" in response ? response.url : null };
 }
 
 export async function fetchExpenseCategoryRecords(
@@ -104,7 +106,7 @@ export async function fetchExpenseCategoryRecords(
 		filter_properties: Object.keys(shape),
 		filter: {
 			property: "カテゴリ",
-			select: { does_not_equal: "未分類" },
+			select: { does_not_equal: UNCATEGORIZED },
 		},
 	});
 

@@ -58,29 +58,66 @@ npm run check
 curl -X POST https://<worker>/expenses \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"name":"ローソン 昼ごはん","amount":820,"paymentMethod":"カード","date":"2026-08-21"}'
+  -d '{"name":"ローソン 昼ごはん","amount":"¥820"}'
 ```
 
 ## エンドポイント
 
-| メソッド | パス | 認証 | 内容 |
+### `GET /health`
+
+疎通確認。認証不要。
+
+```json
+{ "status": "ok" }
+```
+
+### `POST /expenses`
+
+支出を1件登録する。購入日の月の月次サマリページがあれば、リレーションを張る。
+
+| 項目 | 型 | 必須 | 説明 |
 | --- | --- | --- | --- |
-| `GET` | `/health` | 不要 | 疎通確認。`{ "status": "ok" }` |
-| `POST` | `/expenses` | 必要 | 支出を1件登録する |
+| `name` | string | ✅ | 支出名。1〜200文字 |
+| `amount` | number \| string | ✅ | 金額。0以外の整数（返金記録のため負の値も可）。`"¥1,200"` `"１２００円"` のような文字列も受け付ける |
+| `paymentMethod` | string |  | `カード` / `現金`。省略時は `カード` |
+| `date` | string |  | 購入日。`YYYY-MM-DD`（`YYYY/MM/DD` も可）。省略時は JST の今日 |
+| `category` | string |  | カテゴリ。省略時は支出名から自動決定 |
+
+```json
+{
+  "success": true,
+  "pageId": "1f8c1d7d-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "url": "https://www.notion.so/...",
+  "category": "日用・食費",
+  "categorySource": "auto",
+  "expense": {
+    "name": "ローソン 昼ごはん",
+    "amount": 820,
+    "paymentMethod": "カード",
+    "date": "2026-08-21",
+    "category": "日用・食費"
+  }
+}
+```
+
+`categorySource` は `request`（リクエスト指定）か `auto`（自動決定）。
 
 ## エラーレスポンス
 
 ```json
 {
   "success": false,
-  "code": "unauthorized",
-  "message": "認証に失敗しました。",
-  "requestId": "9baff8f9-7f5b-4428-93d0-d5c0954d477c"
+  "code": "validation_error",
+  "message": "amount must be not zero",
+  "requestId": "9baff8f9-7f5b-4428-93d0-d5c0954d477c",
+  "errors": [{ "field": "amount", "message": "amount must be not zero" }]
 }
 ```
 
 | ステータス | `code` | 内容 |
 | --- | --- | --- |
+| 400 | `invalid_json` | ボディが JSON として解釈できない |
+| 400 | `validation_error` | 入力値が不正（`errors` に全件） |
 | 401 | `unauthorized` | API キーが不正 |
 | 404 | `not_found` | 該当するエンドポイントがない |
 | 500 | `server_misconfigured` | サーバ側に `API_KEY` が未設定 |
