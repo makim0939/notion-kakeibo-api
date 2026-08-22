@@ -1,10 +1,10 @@
 import { Hono } from "hono";
 import type { AppEnv, Bindings } from "../env";
-import { nowInJst } from "../lib/date";
 import { buildErrorBody } from "../lib/response";
 import { createApiKeyAuth } from "../middleware/auth";
-import { createNotionService, SummaryPageError } from "../services/notion";
-import { buildSectionHeading, renderSummaryBlocks } from "../services/summary-page";
+import { SummaryPageError } from "../services/notion";
+import type { SummaryRefreshResult } from "../services/summary-refresh";
+import { createNotionServiceFromEnv, refreshSummaryPage } from "../services/summary-refresh";
 
 /** Notion の id() はハイフン無しの32桁で返る。ハイフン付きも受け付ける。 */
 const PAGE_ID_PATTERN = /^[0-9a-f]{32}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -56,23 +56,8 @@ summaryRoute.post("/", async (c) => {
 	}
 });
 
-async function updateSummary(env: Bindings, pageId: string) {
-	const notionService = createNotionService({
-		apiKey: env.NOTION_API_KEY,
-		databaseId: env.NOTION_DATABASE_ID,
-		dataSourceId: env.NOTION_DATASOURCE_ID,
-		summaryDataSourceId: env.NOTION_SUMMARY_DATA_SOURCE_ID,
-	});
-
-	const values = await notionService.fetchSummaryValues(pageId);
-	const updatedAt = nowInJst();
-	const { created } = await notionService.replaceSummarySection(
-		pageId,
-		renderSummaryBlocks(values),
-		buildSectionHeading(updatedAt),
-	);
-
-	return { pageId, title: values.title, month: values.date?.slice(0, 7) ?? null, created, updatedAt };
+function updateSummary(env: Bindings, pageId: string) {
+	return refreshSummaryPage(createNotionServiceFromEnv(env), pageId);
 }
 
 /** Notion のボタン Webhook はページのプロパティを含む JSON を POST してくる。 */
@@ -117,9 +102,20 @@ function successPage(result: Awaited<ReturnType<typeof updateSummary>>): string 
 		"サマリを更新しました",
 		`<h1>✅ サマリを更新しました</h1>
 <p>${escapeHtml(result.title || result.pageId)}</p>
-<p>${result.created ? "サマリセクションを新しく作成しました。" : "サマリセクションを最新の内容に更新しました。"}</p>
+<p>${statusMessage(result.status)}</p>
 <p class="hint">最終更新 ${escapeHtml(result.updatedAt)} / このタブは閉じて Notion に戻ってください。</p>`,
 	);
+}
+
+function statusMessage(status: SummaryRefreshResult["status"]): string {
+	switch (status) {
+		case "created":
+			return "サマリセクションを新しく作成しました。";
+		case "updated":
+			return "サマリセクションを最新の内容に更新しました。";
+		default:
+			return "すでに最新の内容でした。変更はありません。";
+	}
 }
 
 function errorPage(message: string, requestId: string): string {

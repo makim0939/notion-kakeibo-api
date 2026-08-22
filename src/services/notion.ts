@@ -4,7 +4,7 @@ import type { CategoryHistoryRecord, ExpenseRequest } from "../types/expense";
 import { UNCATEGORIZED } from "../types/expense";
 import type { SummaryValues } from "../types/summary";
 import { ACHIEVED_MARK, SUMMARY_PROPERTY } from "../types/summary";
-import { buildSectionCallout, MANAGED_SECTION_PREFIX } from "./summary-page";
+import { buildSectionCallout, MANAGED_SECTION_PREFIX, signatureOfExisting, summarySignature } from "./summary-page";
 
 /**
  * Notion 呼び出しのタイムアウト。SDK の既定は60秒だが、
@@ -76,6 +76,8 @@ export function createNotionService(config: NotionServiceConfig) {
 		fetchSummaryValues: (pageId: string) => fetchSummaryValues(notion, pageId, summaryDataSourceId),
 		replaceSummarySection: (pageId: string, blocks: BlockObjectRequest[], heading: string) =>
 			replaceSummarySection(notion, pageId, blocks, heading),
+		querySummaryPageIds: (from: string, toExclusive: string) =>
+			querySummaryPageIds(notion, summaryDataSourceId, from, toExclusive),
 	};
 }
 
@@ -283,27 +285,40 @@ export async function fetchSummaryValues(
 	};
 }
 
+export type SummarySectionStatus = "created" | "updated" | "unchanged";
+
 /**
  * 自動生成セクションを最新の内容に差し替える。
  * 目印のコールアウトがあればその子ブロックだけを作り直し、無ければページ末尾に新規作成する。
  * ユーザが書いた既存ブロックには一切触れない。
+ *
+ * 生成結果が現在の内容と同じなら何も書かない。定期実行しても
+ * Notion の更新履歴が汚れず、「最終更新」が実際に中身が変わった時刻を指す。
  */
 export async function replaceSummarySection(
 	notion: Client,
 	pageId: string,
 	blocks: BlockObjectRequest[],
 	heading: string,
-): Promise<{ created: boolean; sectionId: string }> {
+): Promise<{ status: SummarySectionStatus; sectionId: string }> {
 	const existing = await findManagedSection(notion, pageId);
 
 	if (existing) {
+		const current = await listChildren(notion, existing);
+
+		if (signatureOfExisting(current) === summarySignature(blocks)) {
+			return { status: "unchanged", sectionId: existing };
+		}
+
 		await notion.blocks.update({
 			block_id: existing,
 			callout: { rich_text: [{ text: { content: heading } }] },
 		});
-		await deleteChildren(notion, existing);
+		for (const block of current) {
+			await notion.blocks.delete({ block_id: block.id });
+		}
 		await appendInChunks(notion, existing, blocks);
-		return { created: false, sectionId: existing };
+		return { status: "updated", sectionId: existing };
 	}
 
 	const appended = await notion.blocks.children.append({
@@ -317,7 +332,32 @@ export async function replaceSummarySection(
 	}
 
 	await appendInChunks(notion, sectionId, blocks);
-	return { created: true, sectionId };
+	return { status: "created", sectionId };
+}
+
+/** 指定ブロックの子を全部読む。 */
+async function listChildren(
+	notion: Client,
+	blockId: string,
+): Promise<{ id: string; type: string; [key: string]: unknown }[]> {
+	const blocks: { id: string; type: string; [key: string]: unknown }[] = [];
+	let cursor: string | undefined;
+
+	do {
+		const response = await notion.blocks.children.list({
+			block_id: blockId,
+			start_cursor: cursor,
+			page_size: NOTION_PAGE_SIZE,
+		});
+		for (const block of response.results) {
+			if ("type" in block) {
+				blocks.push(block as unknown as { id: string; type: string });
+			}
+		}
+		cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
+	} while (cursor);
+
+	return blocks;
 }
 
 /** ページ直下から、自動生成セクションの目印コールアウトを探す。 */
@@ -345,26 +385,6 @@ async function findManagedSection(notion: Client, pageId: string): Promise<strin
 	} while (cursor);
 
 	return undefined;
-}
-
-async function deleteChildren(notion: Client, blockId: string): Promise<void> {
-	const ids: string[] = [];
-	let cursor: string | undefined;
-
-	do {
-		const response = await notion.blocks.children.list({
-			block_id: blockId,
-			start_cursor: cursor,
-			page_size: NOTION_PAGE_SIZE,
-		});
-		ids.push(...response.results.map((block) => block.id));
-		cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
-	} while (cursor);
-
-	// 並列で消すとレート制限に当たりやすいので順番に消す。
-	for (const id of ids) {
-		await notion.blocks.delete({ block_id: id });
-	}
 }
 
 /** append は1リクエスト100ブロックまでなので分割して送る。 */
@@ -451,4 +471,25 @@ export class SummaryPageError extends Error {
 		super(message);
 		this.name = "SummaryPageError";
 	}
+}
+
+/** 指定期間に「日付」が入る月次サマリページのIDを新しい順に返す。 */
+export async function querySummaryPageIds(
+	notion: Client,
+	dataSourceId: string,
+	from: string,
+	toExclusive: string,
+): Promise<string[]> {
+	const pages = await fetchDataSourcePages(notion, {
+		data_source_id: dataSourceId,
+		filter: {
+			and: [
+				{ property: SUMMARY_PROPERTY.date, date: { on_or_after: from } },
+				{ property: SUMMARY_PROPERTY.date, date: { before: toExclusive } },
+			],
+		},
+		sorts: [{ property: SUMMARY_PROPERTY.date, direction: "descending" }],
+	});
+
+	return pages.map((page) => page.id);
 }

@@ -135,3 +135,30 @@ export function buildSectionCallout(heading: string): BlockObjectRequest {
 		},
 	};
 }
+
+/**
+ * ブロック列を比較用の文字列に潰す。
+ * 見出しの最終更新時刻は毎回変わるので比較対象に含めず、本文だけを比べる。
+ * これで「中身が変わっていないのに書き換える」のを防ぐ。
+ */
+export function summarySignature(blocks: BlockObjectRequest[]): string {
+	return blocks.map(signatureOfRequest).join("\n");
+}
+
+function signatureOfRequest(block: BlockObjectRequest): string {
+	const type = Object.keys(block)[0] as keyof typeof block;
+	const body = block[type] as { rich_text?: { text: { content: string } }[]; checked?: boolean };
+	const text = body.rich_text?.map((part) => part.text.content).join("") ?? "";
+	return `${type}\t${body.checked ?? ""}\t${text}`;
+}
+
+/** Notion から読んだ既存ブロックを、summarySignature と同じ形式に潰す。 */
+export function signatureOfExisting(blocks: { type: string; [key: string]: unknown }[]): string {
+	return blocks
+		.map((block) => {
+			const body = block[block.type] as { rich_text?: { plain_text: string }[]; checked?: boolean } | undefined;
+			const text = body?.rich_text?.map((part) => part.plain_text).join("") ?? "";
+			return `${block.type}\t${body?.checked ?? ""}\t${text}`;
+		})
+		.join("\n");
+}

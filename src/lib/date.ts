@@ -53,3 +53,12 @@ export function nowInJst(now: Date = new Date()): string {
 	const jst = new Date(now.getTime() + JST_OFFSET_MS).toISOString();
 	return `${jst.slice(0, 10)} ${jst.slice(11, 16)}`;
 }
+
+/** YYYY-MM の1つ前の月を返す。 */
+export function previousMonth(month: string): string {
+	const year = Number(month.slice(0, 4));
+	const monthNumber = Number(month.slice(5, 7));
+	const prevYear = monthNumber === 1 ? year - 1 : year;
+	const prevMonth = monthNumber === 1 ? 12 : monthNumber - 1;
+	return `${String(prevYear).padStart(4, "0")}-${String(prevMonth).padStart(2, "0")}`;
+}
