@@ -82,6 +82,8 @@ export function createNotionService(config: NotionServiceConfig) {
 		queryExpensesInMonth: (month: string) => queryExpensesInMonth(notion, dataSourceId, month),
 		linkExpensesToSummary: (month: string, summaryPageId: string) =>
 			linkExpensesToSummary(notion, dataSourceId, month, summaryPageId),
+		updateExpenseViewForMonth: (summaryPageId: string, month: string) =>
+			updateExpenseViewForMonth(notion, dataSourceId, summaryPageId, month),
 		querySummaryPageIds: (from: string, toExclusive: string) =>
 			querySummaryPageIds(notion, summaryDataSourceId, from, toExclusive),
 	};
@@ -616,4 +618,155 @@ export async function linkExpensesToSummary(
 
 	// 上限に達した場合はまだ残っている可能性がある。次回の実行で続きを処理する。
 	return { linked, failed, truncated: pages.length >= MAX_RELATION_LINKS_PER_RUN };
+}
+
+/** 走査するビューの上限。月ごとに1つ増えていくため、際限なく辿らないよう区切る。 */
+const MAX_VIEWS_TO_SCAN = 200;
+
+export type ExpenseViewStatus = "updated" | "unchanged" | "not_found";
+
+/**
+ * サマリページに置かれた支出DBのリンクドビューに、その月のフィルタをかける。
+ *
+ * グルーピング・ソート・列の計算（合計）はテンプレート側で設定済みで、
+ * とくに「計算」は API から設定できない。そのため送るのは filter だけにして、
+ * テンプレートで作り込んだ表示設定をそのまま活かす。
+ * Notion のテンプレート機能では「その月だけ」の条件を作れないので、ここが穴埋めになる。
+ */
+export async function updateExpenseViewForMonth(
+	notion: Client,
+	dataSourceId: string,
+	summaryPageId: string,
+	month: string,
+): Promise<ExpenseViewStatus> {
+	const wrapperIds = await findLinkedDatabaseIds(notion, summaryPageId);
+	if (wrapperIds.size === 0) {
+		return "not_found";
+	}
+
+	// 表と円グラフのように同じページに複数置かれることがあるので、まとめて絞る。
+	const views = await findViewsInDatabases(notion, dataSourceId, wrapperIds);
+	if (views.length === 0) {
+		return "not_found";
+	}
+
+	const { start, endExclusive } = monthRange(month);
+	const stale = views.filter((view) => !viewCoversMonth(view.filter, start, endExclusive));
+	if (stale.length === 0) {
+		return "unchanged";
+	}
+
+	for (const view of stale) {
+		await notion.views.update({
+			view_id: view.id,
+			// SDK の ViewFilterRequest は空オブジェクト型で、実際に受け付ける
+			// データソースクエリと同じ形を表現できていないため、ここだけ型を通す。
+			filter: {
+				and: [
+					{ property: "購入日", date: { on_or_after: start } },
+					{ property: "購入日", date: { before: endExclusive } },
+				],
+			} as unknown as Record<string, never>,
+		});
+	}
+
+	return "updated";
+}
+
+/**
+ * ページ直下のリンクドDBブロックの id を集める。
+ * リンクドビューは child_database ブロックとして現れ、その id がビューの親DBの id になる。
+ */
+async function findLinkedDatabaseIds(notion: Client, pageId: string): Promise<Set<string>> {
+	const ids = new Set<string>();
+	let cursor: string | undefined;
+
+	do {
+		const response = await notion.blocks.children.list({
+			block_id: pageId,
+			start_cursor: cursor,
+			page_size: NOTION_PAGE_SIZE,
+		});
+		for (const block of response.results) {
+			if ("type" in block && block.type === "child_database") {
+				ids.add(normalizeId(block.id));
+			}
+		}
+		cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
+	} while (cursor);
+
+	return ids;
+}
+
+/** 支出データソースのビューのうち、指定した親DBに属するものを集める。 */
+async function findViewsInDatabases(
+	notion: Client,
+	dataSourceId: string,
+	databaseIds: Set<string>,
+): Promise<{ id: string; filter: unknown }[]> {
+	const found: { id: string; filter: unknown }[] = [];
+	let cursor: string | undefined;
+	let scanned = 0;
+
+	do {
+		const response = await notion.views.list({
+			data_source_id: dataSourceId,
+			start_cursor: cursor,
+			page_size: NOTION_PAGE_SIZE,
+		});
+
+		for (const reference of response.results) {
+			if (scanned >= MAX_VIEWS_TO_SCAN) {
+				return found;
+			}
+			scanned += 1;
+
+			const view = await notion.views.retrieve({ view_id: reference.id });
+			const parent = "parent" in view ? view.parent : undefined;
+			const parentId = parent && "database_id" in parent ? normalizeId(parent.database_id) : undefined;
+
+			if (parentId && databaseIds.has(parentId)) {
+				found.push({ id: view.id, filter: "filter" in view ? view.filter : null });
+			}
+		}
+
+		cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
+	} while (cursor);
+
+	return found;
+}
+
+/**
+ * 既存フィルタが目的の月をそのまま表しているかを判定する。
+ * Notion はフィルタをプロパティ名ではなく id で返すため、
+ * プロパティを見ずに日付の境界だけで比べる。
+ */
+function viewCoversMonth(filter: unknown, start: string, endExclusive: string): boolean {
+	const bounds = new Set<string>();
+
+	const walk = (node: unknown) => {
+		if (Array.isArray(node)) {
+			for (const child of node) {
+				walk(child);
+			}
+			return;
+		}
+		if (typeof node !== "object" || node === null) {
+			return;
+		}
+		for (const value of Object.values(node)) {
+			if (typeof value === "string") {
+				bounds.add(value);
+			} else {
+				walk(value);
+			}
+		}
+	};
+	walk(filter);
+
+	return bounds.has(start) && bounds.has(endExclusive);
+}
+
+function normalizeId(id: string): string {
+	return id.replaceAll("-", "").toLowerCase();
 }

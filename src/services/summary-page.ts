@@ -10,9 +10,6 @@ import type { ExpenseBreakdown } from "./expense-breakdown";
  */
 export const MANAGED_SECTION_PREFIX = "月次サマリ（自動生成）";
 
-/** 明細を出すカテゴリあたりの最大行数。ページが長くなりすぎるのを防ぐ。 */
-const MAX_DETAIL_ROWS_PER_CATEGORY = 30;
-
 /** コールアウト見出しの文言。最終更新時刻を添える。 */
 export function buildSectionHeading(updatedAt: string): string {
 	return `${MANAGED_SECTION_PREFIX} / 最終更新 ${updatedAt}`;
@@ -42,7 +39,6 @@ export function renderSummaryBlocks(
 			? []
 			: [paragraph(`うち住居・食費以外の支出 ${yen(values.discretionaryExpense)}`)]),
 		...categoryBlocks(breakdown),
-		...detailBlocks(breakdown),
 	];
 }
 
@@ -66,35 +62,6 @@ function categoryBlocks(breakdown: ExpenseBreakdown | null): BlockObjectRequest[
 			? []
 			: [paragraph(`※ 積立投資 ${groupDigits(breakdown.investment)} 円 は資産の移動なので支出に含めていません。`)]),
 	];
-}
-
-/** カテゴリごとにまとめた支出の明細。各カテゴリ内は金額の大きい順。 */
-function detailBlocks(breakdown: ExpenseBreakdown | null): BlockObjectRequest[] {
-	if (!breakdown || breakdown.groups.length === 0) {
-		return [];
-	}
-
-	const blocks: BlockObjectRequest[] = [heading("支出の明細")];
-
-	if (breakdown.truncated) {
-		blocks.push(paragraph("※ 件数が多いため一部のみ表示しています。"));
-	}
-
-	for (const group of breakdown.groups) {
-		const shown = group.items.slice(0, MAX_DETAIL_ROWS_PER_CATEGORY);
-		blocks.push(heading3(`${group.category}　${groupDigits(group.total)} 円（${group.items.length} 件）`));
-		blocks.push(
-			table(
-				["購入日", "支出名", "金額"],
-				shown.map((item) => tableRow([item.date ?? "—", item.name, `${groupDigits(item.amount)} 円`])),
-			),
-		);
-		if (group.items.length > shown.length) {
-			blocks.push(paragraph(`ほか ${group.items.length - shown.length} 件`));
-		}
-	}
-
-	return blocks;
 }
 
 /**

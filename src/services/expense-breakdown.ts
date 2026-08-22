@@ -12,18 +12,10 @@ export type CategoryBreakdown = {
 	delta: number | null;
 };
 
-export type CategoryGroup = {
-	category: string;
-	total: number;
-	/** 金額の大きい順。 */
-	items: MonthlyExpense[];
-};
-
 export type ExpenseBreakdown = {
 	total: number;
 	count: number;
 	rows: CategoryBreakdown[];
-	groups: CategoryGroup[];
 	/** 積立投資の合計。支出には含めない。実績が無ければ null。 */
 	investment: number | null;
 	/** 取得上限に達して一部しか読めていない場合に true。 */
@@ -65,19 +57,10 @@ export function breakdownExpenses(
 		};
 	}).sort(byTotalDesc);
 
-	const groups: CategoryGroup[] = rows.map((row) => ({
-		category: row.category,
-		total: row.total,
-		items: spent
-			.filter((expense) => expense.category === row.category)
-			.sort((a, b) => b.amount - a.amount || (a.date ?? "").localeCompare(b.date ?? "")),
-	}));
-
 	return {
 		total,
 		count: spent.length,
 		rows,
-		groups,
 		investment: investmentItems.length === 0 ? null : sum(investmentItems),
 		truncated,
 	};

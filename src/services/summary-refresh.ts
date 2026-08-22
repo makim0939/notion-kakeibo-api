@@ -35,6 +35,7 @@ export async function refreshSummaryPage(notionService: NotionService, pageId: s
 	// 集計を読む前に張る。ここで補完した分がサマリ側の集計プロパティにも反映される。
 	if (month !== null) {
 		await linkOrphanExpenses(notionService, month, pageId);
+		await focusExpenseView(notionService, pageId, month);
 	}
 
 	const breakdown = month === null ? null : await loadBreakdown(notionService, month);
@@ -63,6 +64,25 @@ async function linkOrphanExpenses(notionService: NotionService, month: string, s
 		}
 	} catch (error) {
 		log("warn", "expense_link_unavailable", { month, ...describeError(error) });
+	}
+}
+
+/**
+ * ページ内の支出リンクドビューを、その月だけに絞る。
+ *
+ * グルーピング・ソート・合計の計算はテンプレート側の設定をそのまま使い、
+ * Notion のテンプレートでは表現できない「その月だけ」の条件だけをここで足す。
+ * ビューが無いページ（テンプレート更新前に作った月など）もあるため、
+ * 見つからなくてもサマリ本文の生成は続ける。
+ */
+async function focusExpenseView(notionService: NotionService, pageId: string, month: string): Promise<void> {
+	try {
+		const status = await notionService.updateExpenseViewForMonth(pageId, month);
+		if (status !== "unchanged") {
+			log("info", "expense_view_filtered", { month, pageId, status });
+		}
+	} catch (error) {
+		log("warn", "expense_view_unavailable", { month, pageId, ...describeError(error) });
 	}
 }
 
