@@ -79,7 +79,7 @@ curl -X POST https://<worker>/expenses \
 | --- | --- | --- | --- |
 | `name` | string | ✅ | 支出名。1〜200文字 |
 | `amount` | number \| string | ✅ | 金額。0以外の整数（返金記録のため負の値も可）。`"¥1,200"` `"１２００円"` のような文字列も受け付ける |
-| `paymentMethod` | string |  | `カード` / `現金`。`card` `cash` `クレカ` 等の別名も可。省略時は `カード` |
+| `paymentMethod` | string |  | `カード` / `現金`。省略時は `カード` |
 | `date` | string |  | 購入日。`YYYY-MM-DD`（`YYYY/MM/DD` も可）。省略時は JST の今日 |
 | `category` | string |  | カテゴリ。省略時は支出名から自動決定 |
 

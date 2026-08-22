@@ -8,15 +8,6 @@ import {
 	PAYMENT_METHODS,
 } from "../types/expense";
 
-/** 支払い方法の別名。iPhone ショートカット側の表記ゆれを吸収する。 */
-const PAYMENT_METHOD_ALIASES: Record<string, string> = {
-	card: "カード",
-	クレジット: "カード",
-	クレカ: "カード",
-	cash: "現金",
-	げんきん: "現金",
-};
-
 /**
  * 金額。OCR やショートカットからは "¥1,200" のような文字列で渡ることがあるため、
  * 記号・区切り・全角数字を落としてから数値として検証する。
@@ -64,18 +55,6 @@ const dateSchema = z.preprocess(
 		.refine(isValidDate, "date must be an existing calendar date"),
 );
 
-const paymentMethodSchema = z.preprocess(
-	(value) => {
-		if (typeof value !== "string") {
-			return value;
-		}
-
-		const trimmed = value.trim();
-		return PAYMENT_METHOD_ALIASES[trimmed.toLowerCase()] ?? trimmed;
-	},
-	z.enum(PAYMENT_METHODS, `paymentMethod must be one of: ${PAYMENT_METHODS.join(", ")}`),
-);
-
 /**
  * 支出登録リクエスト。
  * date と paymentMethod は省略可能で、省略時はサーバ側で補完する
@@ -90,7 +69,11 @@ export const expenseSchema = z.object({
 
 	amount: amountSchema,
 
-	paymentMethod: paymentMethodSchema.optional().default(DEFAULT_PAYMENT_METHOD),
+	// クライアントは選択肢から送る想定なので、表記ゆれの吸収はしない。
+	paymentMethod: z
+		.enum(PAYMENT_METHODS, `paymentMethod must be one of: ${PAYMENT_METHODS.join(", ")}`)
+		.optional()
+		.default(DEFAULT_PAYMENT_METHOD),
 
 	date: dateSchema.optional(),
 
