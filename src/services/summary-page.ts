@@ -329,47 +329,71 @@ export function summarySignature(blocks: BlockObjectRequest[]): string {
 }
 
 function signatureOfRequest(block: BlockObjectRequest, depth = 0): string {
-	const type = Object.keys(block)[0] as keyof typeof block;
-	const body = block[type] as {
-		rich_text?: { text: { content: string } }[];
-		cells?: { text: { content: string } }[][];
-		checked?: boolean;
-		children?: BlockObjectRequest[];
-	};
+	const children = blockBodyOf(block).children?.map((child) => signatureOfRequest(child, depth + 1)) ?? [];
+
+	return [selfSignatureOfRequest(block, depth), ...children].join("\n");
+}
+
+/** 生成ブロックの中身のうち、比較と書き換えに使う部分。 */
+type BlockRequestBody = {
+	rich_text?: { text: { content: string } }[];
+	cells?: { text: { content: string } }[][];
+	checked?: boolean;
+	children?: BlockObjectRequest[];
+};
+
+/** 生成ブロックの種類。1ブロックは { paragraph: {...} } の形なので、唯一のキーが種類になる。 */
+export function blockTypeOf(block: BlockObjectRequest): string {
+	return Object.keys(block)[0];
+}
+
+/** 生成ブロックの中身を、種類のキーの下から取り出す。 */
+export function blockBodyOf(block: BlockObjectRequest): BlockRequestBody {
+	return block[blockTypeOf(block) as keyof BlockObjectRequest] as BlockRequestBody;
+}
+
+/**
+ * 生成ブロック1つを、子を含めずに比較用の文字列へ潰す。
+ * 「このブロック自身を書き換える必要があるか」を、子と切り分けて判定するために使う。
+ */
+export function selfSignatureOfRequest(block: BlockObjectRequest, depth = 0): string {
+	const body = blockBodyOf(block);
 
 	const text =
 		body.rich_text?.map((part) => part.text.content).join("") ??
 		body.cells?.map((cell) => cell.map((part) => part.text.content).join("")).join("\t") ??
 		"";
 
-	const self = `${"  ".repeat(depth)}${type}\t${body.checked ?? ""}\t${text}`;
-	const children = body.children?.map((child) => signatureOfRequest(child, depth + 1)) ?? [];
-
-	return [self, ...children].join("\n");
+	return `${"  ".repeat(depth)}${blockTypeOf(block)}\t${body.checked ?? ""}\t${text}`;
 }
 
 /** Notion から読んだ既存ブロックを、summarySignature と同じ形式に潰す。 */
 export function signatureOfExisting(blocks: ExistingBlock[], depth = 0): string {
 	return blocks
 		.map((block) => {
-			const body = block[block.type] as
-				| {
-						rich_text?: { plain_text: string }[];
-						cells?: { plain_text: string }[][];
-						checked?: boolean;
-				  }
-				| undefined;
-
-			const text = normalizeNotionText(
-				body?.rich_text?.map((part) => part.plain_text).join("") ??
-					body?.cells?.map((cell) => cell.map((part) => part.plain_text).join("")).join("\t") ??
-					"",
-			);
-
-			const self = `${"  ".repeat(depth)}${block.type}\t${body?.checked ?? ""}\t${text}`;
+			const self = selfSignatureOfExisting(block, depth);
 			const children = block.children ? signatureOfExisting(block.children, depth + 1) : "";
 
 			return children ? `${self}\n${children}` : self;
 		})
 		.join("\n");
+}
+
+/** 既存ブロック1つを、子を含めずに selfSignatureOfRequest と同じ形式に潰す。 */
+export function selfSignatureOfExisting(block: ExistingBlock, depth = 0): string {
+	const body = block[block.type] as
+		| {
+				rich_text?: { plain_text: string }[];
+				cells?: { plain_text: string }[][];
+				checked?: boolean;
+		  }
+		| undefined;
+
+	const text = normalizeNotionText(
+		body?.rich_text?.map((part) => part.plain_text).join("") ??
+			body?.cells?.map((cell) => cell.map((part) => part.plain_text).join("")).join("\t") ??
+			"",
+	);
+
+	return `${"  ".repeat(depth)}${block.type}\t${body?.checked ?? ""}\t${text}`;
 }
