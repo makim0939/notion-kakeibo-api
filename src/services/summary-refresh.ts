@@ -1,6 +1,8 @@
 import type { Bindings } from "../env";
 import { currentMonthInJst, monthRange, nowInJst, previousMonth } from "../lib/date";
 import { describeError, log } from "../lib/log";
+import type { ExpenseBreakdown } from "./expense-breakdown";
+import { breakdownExpenses } from "./expense-breakdown";
 import type { SummarySectionStatus } from "./notion";
 import { createNotionService } from "./notion";
 import { buildSectionHeading, renderSummaryBlocks } from "./summary-page";
@@ -28,14 +30,34 @@ export function createNotionServiceFromEnv(env: Bindings): NotionService {
 /** サマリページ1枚を最新化する。内容が変わっていなければ書き込まない。 */
 export async function refreshSummaryPage(notionService: NotionService, pageId: string): Promise<SummaryRefreshResult> {
 	const values = await notionService.fetchSummaryValues(pageId);
+	const month = values.date?.slice(0, 7) ?? null;
+	const breakdown = month === null ? null : await loadBreakdown(notionService, month);
 	const updatedAt = nowInJst();
 	const { status } = await notionService.replaceSummarySection(
 		pageId,
-		renderSummaryBlocks(values),
+		renderSummaryBlocks(values, breakdown),
 		buildSectionHeading(updatedAt),
 	);
 
-	return { pageId, title: values.title, month: values.date?.slice(0, 7) ?? null, status, updatedAt };
+	return { pageId, title: values.title, month, status, updatedAt };
+}
+
+/**
+ * カテゴリ別集計と明細のもとになる支出を読む。
+ * 前月分も読むのはカテゴリごとの増減を出すため。
+ * ここで失敗しても資産推移などは出せるので、握りつぶして null を返す。
+ */
+async function loadBreakdown(notionService: NotionService, month: string): Promise<ExpenseBreakdown | null> {
+	try {
+		const [current, previous] = await Promise.all([
+			notionService.queryExpensesInMonth(month),
+			notionService.queryExpensesInMonth(previousMonth(month)),
+		]);
+		return breakdownExpenses(current.items, previous.items, current.truncated);
+	} catch (error) {
+		log("warn", "expense_breakdown_unavailable", { month, ...describeError(error) });
+		return null;
+	}
 }
 
 /**

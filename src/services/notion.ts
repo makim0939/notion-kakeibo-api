@@ -1,9 +1,11 @@
 import type { BlockObjectRequest, PageObjectResponse, QueryDataSourceResponse } from "@notionhq/client";
 import { Client } from "@notionhq/client";
-import type { CategoryHistoryRecord, ExpenseRequest } from "../types/expense";
+import { monthRange } from "../lib/date";
+import type { CategoryHistoryRecord, ExpenseRequest, MonthlyExpense } from "../types/expense";
 import { UNCATEGORIZED } from "../types/expense";
 import type { SummaryValues } from "../types/summary";
 import { ACHIEVED_MARK, SUMMARY_PROPERTY } from "../types/summary";
+import type { ExistingBlock } from "./summary-page";
 import { buildSectionCallout, MANAGED_SECTION_PREFIX, signatureOfExisting, summarySignature } from "./summary-page";
 
 /**
@@ -76,6 +78,7 @@ export function createNotionService(config: NotionServiceConfig) {
 		fetchSummaryValues: (pageId: string) => fetchSummaryValues(notion, pageId, summaryDataSourceId),
 		replaceSummarySection: (pageId: string, blocks: BlockObjectRequest[], heading: string) =>
 			replaceSummarySection(notion, pageId, blocks, heading),
+		queryExpensesInMonth: (month: string) => queryExpensesInMonth(notion, dataSourceId, month),
 		querySummaryPageIds: (from: string, toExclusive: string) =>
 			querySummaryPageIds(notion, summaryDataSourceId, from, toExclusive),
 	};
@@ -335,12 +338,13 @@ export async function replaceSummarySection(
 	return { status: "created", sectionId };
 }
 
-/** 指定ブロックの子を全部読む。 */
-async function listChildren(
-	notion: Client,
-	blockId: string,
-): Promise<{ id: string; type: string; [key: string]: unknown }[]> {
-	const blocks: { id: string; type: string; [key: string]: unknown }[] = [];
+/**
+ * 指定ブロックの子を全部読む。
+ * 表は行が子ブロックになるので、1段だけ潜って中身も取る
+ * （中身まで見ないと「表の数値が変わったのに変化なし」と誤判定するため）。
+ */
+async function listChildren(notion: Client, blockId: string, depth = 0): Promise<ExistingBlock[]> {
+	const blocks: ExistingBlock[] = [];
 	let cursor: string | undefined;
 
 	do {
@@ -350,9 +354,14 @@ async function listChildren(
 			page_size: NOTION_PAGE_SIZE,
 		});
 		for (const block of response.results) {
-			if ("type" in block) {
-				blocks.push(block as unknown as { id: string; type: string });
+			if (!("type" in block)) {
+				continue;
 			}
+			const entry = block as unknown as ExistingBlock;
+			if (depth === 0 && block.has_children) {
+				entry.children = await listChildren(notion, block.id, depth + 1);
+			}
+			blocks.push(entry);
 		}
 		cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
 	} while (cursor);
@@ -492,4 +501,58 @@ export async function querySummaryPageIds(
 	});
 
 	return pages.map((page) => page.id);
+}
+
+/** 支出ページから集計に必要なプロパティだけを取り出す形。 */
+const EXPENSE_LIST_SHAPE = {
+	名前: "title",
+	金額: "number",
+	カテゴリ: "select",
+	購入日: "date",
+} as const;
+
+/** 1ヶ月分として読み込む支出の上限。想定外の件数でページが肥大化するのを防ぐ。 */
+const MAX_EXPENSES_PER_MONTH = 500;
+
+/** 指定月の支出を金額の大きい順に取得する。月次サマリの明細・集計に使う。 */
+export async function queryExpensesInMonth(
+	notion: Client,
+	dataSourceId: string,
+	month: string,
+): Promise<{ items: MonthlyExpense[]; truncated: boolean }> {
+	const { start, endExclusive } = monthRange(month);
+
+	const pages = await fetchDataSourcePages(
+		notion,
+		{
+			data_source_id: dataSourceId,
+			filter: {
+				and: [
+					{ property: "購入日", date: { on_or_after: start } },
+					{ property: "購入日", date: { before: endExclusive } },
+				],
+			},
+			sorts: [{ property: "金額", direction: "descending" }],
+		},
+		MAX_EXPENSES_PER_MONTH,
+	);
+
+	const items: MonthlyExpense[] = [];
+	for (const page of pages) {
+		if (!hasProperties(page.properties, EXPENSE_LIST_SHAPE)) {
+			continue;
+		}
+		const properties = page.properties;
+		items.push({
+			name: properties.名前.title
+				.map((part) => part.plain_text)
+				.join("")
+				.trim(),
+			amount: properties.金額.number ?? 0,
+			category: properties.カテゴリ.select?.name ?? UNCATEGORIZED,
+			date: properties.購入日.date?.start.slice(0, 10) ?? null,
+		});
+	}
+
+	return { items, truncated: pages.length >= MAX_EXPENSES_PER_MONTH };
 }

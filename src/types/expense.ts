@@ -43,3 +43,12 @@ export type CategoryHistoryRecord = {
 	名前: string;
 	カテゴリ: string;
 };
+
+/** 月次サマリの集計に使う、支出1件の最小情報。 */
+export type MonthlyExpense = {
+	name: string;
+	amount: number;
+	category: string;
+	/** YYYY-MM-DD。日付未設定なら null。 */
+	date: string | null;
+};

@@ -1,5 +1,6 @@
 import type { BlockObjectRequest } from "@notionhq/client";
 import type { SummaryValues } from "../types/summary";
+import type { ExpenseBreakdown } from "./expense-breakdown";
 
 /**
  * 自動生成セクションの目印。
@@ -8,6 +9,9 @@ import type { SummaryValues } from "../types/summary";
  * 「プレースホルダを置換すると次回は置換対象が無い」という問題が起きない。
  */
 export const MANAGED_SECTION_PREFIX = "月次サマリ（自動生成）";
+
+/** 明細を出すカテゴリあたりの最大行数。ページが長くなりすぎるのを防ぐ。 */
+const MAX_DETAIL_ROWS_PER_CATEGORY = 30;
 
 /** コールアウト見出しの文言。最終更新時刻を添える。 */
 export function buildSectionHeading(updatedAt: string): string {
@@ -18,7 +22,10 @@ export function buildSectionHeading(updatedAt: string): string {
  * サマリ本文のブロックを組み立てる。
  * Notion に触らない純粋な関数なので、そのままテストできる。
  */
-export function renderSummaryBlocks(values: SummaryValues): BlockObjectRequest[] {
+export function renderSummaryBlocks(
+	values: SummaryValues,
+	breakdown: ExpenseBreakdown | null = null,
+): BlockObjectRequest[] {
 	return [
 		heading("目標達成状況"),
 		...goalBlocks(values),
@@ -34,7 +41,66 @@ export function renderSummaryBlocks(values: SummaryValues): BlockObjectRequest[]
 		...(values.discretionaryExpense === null
 			? []
 			: [paragraph(`うち住居・食費以外の支出 ${yen(values.discretionaryExpense)}`)]),
+		...categoryBlocks(breakdown),
+		...detailBlocks(breakdown),
 	];
+}
+
+/** カテゴリ別の支出額。何にいくら使ったかを一覧で見るための表。 */
+function categoryBlocks(breakdown: ExpenseBreakdown | null): BlockObjectRequest[] {
+	if (!breakdown) {
+		return [];
+	}
+	if (breakdown.rows.length === 0) {
+		return [heading("カテゴリ別の支出"), paragraph("この月の支出はまだありません。")];
+	}
+
+	const rows = breakdown.rows.map((row) =>
+		tableRow([
+			row.category,
+			`${row.count} 件`,
+			`${groupDigits(row.total)} 円`,
+			`${row.ratio.toFixed(1)} %`,
+			row.delta === null ? "—" : signedYen(row.delta),
+		]),
+	);
+
+	return [
+		heading("カテゴリ別の支出"),
+		table(
+			["カテゴリ", "件数", "金額", "構成比", "前月比"],
+			[...rows, tableRow(["合計", `${breakdown.count} 件`, `${groupDigits(breakdown.total)} 円`, "100.0 %", "—"])],
+		),
+	];
+}
+
+/** カテゴリごとにまとめた支出の明細。各カテゴリ内は金額の大きい順。 */
+function detailBlocks(breakdown: ExpenseBreakdown | null): BlockObjectRequest[] {
+	if (!breakdown || breakdown.groups.length === 0) {
+		return [];
+	}
+
+	const blocks: BlockObjectRequest[] = [heading("支出の明細")];
+
+	if (breakdown.truncated) {
+		blocks.push(paragraph("※ 件数が多いため一部のみ表示しています。"));
+	}
+
+	for (const group of breakdown.groups) {
+		const shown = group.items.slice(0, MAX_DETAIL_ROWS_PER_CATEGORY);
+		blocks.push(heading3(`${group.category}　${groupDigits(group.total)} 円（${group.items.length} 件）`));
+		blocks.push(
+			table(
+				["購入日", "支出名", "金額"],
+				shown.map((item) => tableRow([item.date ?? "—", item.name, `${groupDigits(item.amount)} 円`])),
+			),
+		);
+		if (group.items.length > shown.length) {
+			blocks.push(paragraph(`ほか ${group.items.length - shown.length} 件`));
+		}
+	}
+
+	return blocks;
 }
 
 /**
@@ -125,6 +191,20 @@ function todo(text: string, checked: boolean): BlockObjectRequest {
 	return { to_do: { rich_text: [{ text: { content: text } }], checked } };
 }
 
+function tableRow(cells: string[]): BlockObjectRequest {
+	return { table_row: { cells: cells.map((cell) => [{ text: { content: cell } }]) } };
+}
+
+function table(header: string[], rows: BlockObjectRequest[]): BlockObjectRequest {
+	return {
+		table: {
+			table_width: header.length,
+			has_column_header: true,
+			children: [tableRow(header), ...rows],
+		},
+	} as BlockObjectRequest;
+}
+
 /** コールアウト本体。子ブロックは別途 append する。 */
 export function buildSectionCallout(heading: string): BlockObjectRequest {
 	return {
@@ -136,29 +216,65 @@ export function buildSectionCallout(heading: string): BlockObjectRequest {
 	};
 }
 
+/** Notion から読んだ既存ブロック。表の行を比較するため子も持つ。 */
+export type ExistingBlock = {
+	id: string;
+	type: string;
+	children?: ExistingBlock[];
+	[key: string]: unknown;
+};
+
 /**
  * ブロック列を比較用の文字列に潰す。
  * 見出しの最終更新時刻は毎回変わるので比較対象に含めず、本文だけを比べる。
  * これで「中身が変わっていないのに書き換える」のを防ぐ。
+ * 表は行が子ブロックになるため、子までたどって比較する。
  */
 export function summarySignature(blocks: BlockObjectRequest[]): string {
-	return blocks.map(signatureOfRequest).join("\n");
+	return blocks.map((block) => signatureOfRequest(block)).join("\n");
 }
 
-function signatureOfRequest(block: BlockObjectRequest): string {
+function signatureOfRequest(block: BlockObjectRequest, depth = 0): string {
 	const type = Object.keys(block)[0] as keyof typeof block;
-	const body = block[type] as { rich_text?: { text: { content: string } }[]; checked?: boolean };
-	const text = body.rich_text?.map((part) => part.text.content).join("") ?? "";
-	return `${type}\t${body.checked ?? ""}\t${text}`;
+	const body = block[type] as {
+		rich_text?: { text: { content: string } }[];
+		cells?: { text: { content: string } }[][];
+		checked?: boolean;
+		children?: BlockObjectRequest[];
+	};
+
+	const text =
+		body.rich_text?.map((part) => part.text.content).join("") ??
+		body.cells?.map((cell) => cell.map((part) => part.text.content).join("")).join("\t") ??
+		"";
+
+	const self = `${"  ".repeat(depth)}${type}\t${body.checked ?? ""}\t${text}`;
+	const children = body.children?.map((child) => signatureOfRequest(child, depth + 1)) ?? [];
+
+	return [self, ...children].join("\n");
 }
 
 /** Notion から読んだ既存ブロックを、summarySignature と同じ形式に潰す。 */
-export function signatureOfExisting(blocks: { type: string; [key: string]: unknown }[]): string {
+export function signatureOfExisting(blocks: ExistingBlock[], depth = 0): string {
 	return blocks
 		.map((block) => {
-			const body = block[block.type] as { rich_text?: { plain_text: string }[]; checked?: boolean } | undefined;
-			const text = body?.rich_text?.map((part) => part.plain_text).join("") ?? "";
-			return `${block.type}\t${body?.checked ?? ""}\t${text}`;
+			const body = block[block.type] as
+				| {
+						rich_text?: { plain_text: string }[];
+						cells?: { plain_text: string }[][];
+						checked?: boolean;
+				  }
+				| undefined;
+
+			const text =
+				body?.rich_text?.map((part) => part.plain_text).join("") ??
+				body?.cells?.map((cell) => cell.map((part) => part.plain_text).join("")).join("\t") ??
+				"";
+
+			const self = `${"  ".repeat(depth)}${block.type}\t${body?.checked ?? ""}\t${text}`;
+			const children = block.children ? signatureOfExisting(block.children, depth + 1) : "";
+
+			return children ? `${self}\n${children}` : self;
 		})
 		.join("\n");
 }
